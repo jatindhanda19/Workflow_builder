@@ -1,10 +1,3 @@
-"""Turns raw answers into normalised values. Pure functions, no LLM.
-
-"its is work_update"                    → "work_update"
-"Watch the work_update tab."            → "work_update"
-"it include the details about changes"  → ["changed_cell", "old_value", "new_value", "changed_by"]
-"6 pm IST"                              → "18:00"
-"""
 
 import re
 from functools import lru_cache

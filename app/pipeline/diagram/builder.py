@@ -1,10 +1,3 @@
-"""Builds a flow diagram deterministically from the workflow JSON (nodes + edges). The LLM never draws it.
-
-Categories, subtitles and shapes come from the registry, looked up by node type.
-Condition branches are labelled Yes/No, and a loop is drawn as a group with a
-dashed "next item" edge back to the loop node.
-"""
-
 import re
 from dataclasses import dataclass
 from functools import lru_cache

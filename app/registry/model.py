@@ -1,5 +1,3 @@
-"""Data model of the registry. Node types and fields are declared as data, not prompt text."""
-
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Literal

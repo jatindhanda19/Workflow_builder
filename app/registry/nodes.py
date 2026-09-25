@@ -1,12 +1,3 @@
-"""Every node type the builder knows about.
-
-To add a node type, add one NodeType entry to NODE_TYPES below. If it has a
-`selector`, it automatically becomes an option of that selector question
-(trigger.kind or action.channel), its fields are asked when it is chosen, and
-the generator and diagram pick it up from `workflow_type`, `display_name` and
-`summary`. See docs/DECISIONS.md for a worked example.
-"""
-
 from dataclasses import replace
 
 from app.registry.model import Choice, FieldDef, NodeType, Phase, When

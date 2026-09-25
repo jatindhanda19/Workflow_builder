@@ -1,5 +1,3 @@
-"""Renders a Diagram as Mermaid `flowchart LR` text (rendered in the UI with mermaid.js)."""
-
 from app.pipeline.diagram.builder import ICONS, Diagram, DiagramEdge, DiagramNode
 
 CLASS_DEFS = {

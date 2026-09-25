@@ -1,9 +1,3 @@
-"""Builds the plan: which nodes the workflow needs and which fields must be collected.
-
-The plan is a pure function of the collected values and the intent, so it is
-recomputed on every turn and follows any answer that changes what applies.
-"""
-
 from dataclasses import dataclass
 
 from app.pipeline.planning.facts import derive_facts

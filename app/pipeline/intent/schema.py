@@ -1,5 +1,3 @@
-"""Strict JSON contracts for intent classification and post-generation follow-ups."""
-
 from typing import Literal
 
 from pydantic import BaseModel, Field

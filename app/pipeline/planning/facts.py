@@ -1,9 +1,3 @@
-"""Derived facts the registry's conditions can refer to (fact.*).
-
-Facts summarise what the answers so far imply, e.g. "the trigger fires per change"
-or "recipients come from a list", so registry entries can stay declarative.
-"""
-
 from app.state.models import FieldValue
 
 EVENT_TRIGGERS = ("new_email", "sheet_event", "new_file", "form_submission")

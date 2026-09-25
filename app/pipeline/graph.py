@@ -1,15 +1,3 @@
-"""One conversation turn as a LangGraph state graph.
-
-ingest ─┬─> confirm ─┬─> classify / followup / check / respond
-        ├─> followup ─┬─> respond                 (question answered, new request to confirm)
-        │             └─> extract                 (edit)
-        ├─> classify ──> extract                  (goal still unknown: intent first)
-        └─> extract ──> merge ─┬─> check ─┬─> ask ──────> respond
-                               │          ├─> generate ─> respond
-                               │          └─> respond
-                               └─> respond        (new request needs confirmation)
-"""
-
 import logging
 from typing import Any
 

@@ -1,5 +1,3 @@
-"""Classifies messages that arrive after a workflow has been generated."""
-
 import json
 import re
 

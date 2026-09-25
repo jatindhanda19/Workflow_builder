@@ -1,5 +1,3 @@
-"""Workflow output: pydantic models plus the JSON Schema every generated workflow is validated against."""
-
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field

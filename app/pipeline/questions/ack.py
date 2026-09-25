@@ -1,5 +1,3 @@
-"""Acknowledgements, written by code from normalised values so the echo always matches what was stored."""
-
 from app.registry import FIELDS
 from app.registry.display import plural
 from app.state.models import WorkflowState

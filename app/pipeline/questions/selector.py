@@ -1,11 +1,3 @@
-"""Deterministic next-question selection.
-
-The field is chosen in code: first open conflict, then the first open required
-field in plan order (phase → node stage → field order), skipping fields whose
-depends_on fields are still open. The LLM may only reword the chosen question;
-if its wording drops an option or a quoted phrase, the template is used.
-"""
-
 import json
 import re
 from dataclasses import dataclass

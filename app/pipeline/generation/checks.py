@@ -1,5 +1,3 @@
-"""Checks every generated workflow must pass: JSON Schema, graph structure and grounding."""
-
 import json
 import re
 from collections import defaultdict

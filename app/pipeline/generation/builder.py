@@ -1,11 +1,3 @@
-"""Builds the workflow JSON from validated state. No LLM: the same state always gives the same workflow.
-
-Nodes come from the plan in stage order; each node's type, name and parameters come
-from its registry entry. Only a few nodes need wiring beyond that (condition
-branches, loop scope, email inputs). A preview mode builds the partial workflow
-shown while fields are still being collected, with undecided nodes marked pending.
-"""
-
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone

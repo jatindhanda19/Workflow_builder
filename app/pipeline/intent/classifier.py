@@ -1,5 +1,3 @@
-"""Goal-first intent classification. Never forces a template: an unknown goal becomes a question."""
-
 import logging
 
 from app.pipeline.intent.rules import classify_by_rules, fill_gaps

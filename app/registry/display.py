@@ -1,5 +1,3 @@
-"""How stored values are shown back to people (acknowledgements, table, diagram)."""
-
 from string import Formatter
 from typing import Any
 

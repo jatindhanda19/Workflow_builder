@@ -1,5 +1,3 @@
-"""Strict JSON contract for field extraction."""
-
 from pydantic import BaseModel, Field
 
 

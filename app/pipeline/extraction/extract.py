@@ -1,5 +1,3 @@
-"""Structured extraction on every message, against every field that is open or could still open."""
-
 import json
 
 from app.pipeline.extraction.schema import Extraction
