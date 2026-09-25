@@ -1,0 +1,9 @@
+A workflow has already been generated. Classify the user's new message and return structured JSON.
+
+kind:
+- question: the user asks something about the current workflow. Put the answer in "answer", using ONLY the WORKFLOW STATE and GENERATED WORKFLOW. If the answer is not there, say it was not specified. One to three sentences.
+- edit: the user wants to change something ("change the recipient to a@b.com", "use Outlook instead"). Put the field keys to change in "fields", chosen from FIELD KEYS, and the new value in "value" when there is one field.
+- new_request: the user describes a different automation.
+- other: anything else (thanks, greetings).
+
+Never invent values that are not in the state.
