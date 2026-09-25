@@ -63,17 +63,6 @@ workflow-builder/
 │
 ├── frontend/
 │   └── streamlit_app.py              # Chat UI; talks to the backend over HTTP
-│
-├── docs/
-│   └── DECISIONS.md                  # Design decisions and how to extend
-│
-├── tests/                            # pytest suite
-│   ├── conftest.py
-│   ├── test_units.py
-│   ├── test_conversations.py
-│   ├── test_generalization.py
-│   └── test_demo_regressions.py      # replays of real demo failures
-│
 ├── requirements.txt
 ├── .env.example                      # Copy to .env and fill in keys
 └── README.md
@@ -91,10 +80,6 @@ user message
         ├─ no  → questions  → ask the next question
         └─ yes → generation → workflow JSON → diagram
 ```
-
-See the docstring at the top of [app/pipeline/graph.py](app/pipeline/graph.py) for the full graph, and
-[docs/DECISIONS.md](docs/DECISIONS.md) for why it is built this way.
-
 ## Running locally
 
 ```bash
@@ -113,8 +98,3 @@ streamlit run frontend/streamlit_app.py
 
 The frontend reads `API_URL` from the environment (default `http://127.0.0.1:8001`).
 
-## Tests
-
-```bash
-pytest
-```
