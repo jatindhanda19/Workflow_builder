@@ -10,3 +10,4 @@ streamlit>=1.40
 requests>=2.32
 pytest>=8.0
 httpx>=0.27
+jsonschema>=4 
