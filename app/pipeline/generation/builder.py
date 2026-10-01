@@ -49,6 +49,11 @@ def generate_workflow(state: WorkflowState) -> Workflow:
     return workflow
 
 
+def matches_draft(workflow: Workflow | None, state: WorkflowState) -> bool:
+    """The workflow was generated from the current steps, so it does not need regenerating."""
+    return workflow is not None and [n for n in workflow.nodes if n.type != "end"] == [_node(s) for s in state.steps]
+
+
 def _node(step: Step) -> WorkflowNode:
     app = _slug(step.app or "app")
     if step.kind == "trigger":

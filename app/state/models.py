@@ -80,6 +80,7 @@ class WorkflowState(BaseModel):
     target: str | None = None
     pending_new_request: str | None = None
     workflow: Workflow | None = None
+    previous_workflows: list[Workflow] = Field(default_factory=list)  # generated earlier in this session, oldest first
 
     # Scratch values for the current turn, reset on every message.
     plan: TurnPlan | None = None

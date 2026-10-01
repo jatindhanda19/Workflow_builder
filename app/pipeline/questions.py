@@ -25,6 +25,8 @@ PICK = re.compile(r"^\(?([a-z]|\d{1,2})[).:]?$")
 # "Other" / "Custom message" add nothing: typing your own answer is always possible.
 CATCH_ALL = re.compile(r"^(?:other|custom|something else|none of these)\b", re.IGNORECASE)
 GOAL_TARGET = "workflow.goal"
+CLARIFY_TARGET = "clarify"
+CLARIFY_QUESTION = "I'm not sure what you mean. Which part of the workflow should this change?"
 GOAL_QUESTION = "What would you like to automate?"
 GOAL_EXAMPLES = (
     "When a new order arrives in Shopify, post it to a Slack channel",
@@ -80,6 +82,16 @@ def _resolve(state: WorkflowState, current: list[OpenItem], predicted: NextQuest
     if name == APP and current[0].param is None and state.step(step_id) is None:
         return current[0], True
     return current[0], False
+
+
+def clarify_question(state: WorkflowState, predicted: NextQuestion | None) -> Question:
+    """The latest message has several readings: the AI's question naming them, or a plain one listing the steps."""
+    text = _clean(predicted.question) if predicted else ""
+    options = _dedupe([o.strip() for o in predicted.options if not CATCH_ALL.match(o.strip())]) if predicted else []
+    if text and len(options) >= 2:
+        return Question(target=CLARIFY_TARGET, text=text, options=options)
+    steps = _dedupe([s.title for s in state.steps if not is_placeholder(s)])
+    return Question(target=CLARIFY_TARGET, text=text or CLARIFY_QUESTION, options=options if len(options) >= 2 else steps)
 
 
 def confirm_new_request_question(text: str) -> Question:

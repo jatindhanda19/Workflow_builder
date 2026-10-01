@@ -8,7 +8,7 @@ StepKind = Literal["trigger", "action", "condition"]
 ParamKind = Literal[
     "text", "long_text", "list", "email", "email_list", "url", "number", "time", "timezone", "choice", "channel",
 ]
-MessageKind = Literal["build", "question", "new_request", "other"]
+MessageKind = Literal["build", "question", "new_request", "unclear", "other"]
 
 
 class PlannedParam(BaseModel):
@@ -32,13 +32,14 @@ class PlannedStep(BaseModel):
 
 
 class NextQuestion(BaseModel):
-    target: str = Field(description="'<step id>.<param name>', or '<step id>.app' for a missing app")
+    target: str = Field(description="'<step id>.<param name>', '<step id>.app' for a missing app, or 'clarify'")
     question: str = Field(description="One short question, without the options")
     options: list[str] = Field(default_factory=list, description="2-5 likely answers, most likely first")
 
 
 class TurnPlan(BaseModel):
-    message_kind: MessageKind = Field(description="build, question about the workflow, new_request or other")
+    message_kind: MessageKind = Field(
+        description="build, question about the workflow, new_request, unclear (several readings) or other")
     answer: str | None = Field(default=None, description="For message_kind=question: the answer from the draft")
     workflow_name: str | None = Field(default=None, description="Short title of the automation")
     steps: list[PlannedStep] = Field(default_factory=list, description="The whole workflow, trigger first")

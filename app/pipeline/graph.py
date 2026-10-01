@@ -4,6 +4,7 @@
             │                                                          └─> check / respond
             └─> plan (LLM: design the workflow for any app, predict the next MCQ)
                   └─> merge (code: ground, validate, keep earlier answers)
+                        ├─> respond (an unclear message: ask which reading was meant, change nothing)
                         └─> check (code: is every app and required parameter known?)
                               ├─ no  ─> ask      (the MCQ)
                               └─ yes ─> generate (workflow JSON, no LLM)
@@ -16,10 +17,17 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from app.core.llm import LLMError, RateLimitedError, StructuredLLM
-from app.pipeline.generation.builder import GenerationError, generate_workflow
+from app.pipeline.generation.builder import GenerationError, generate_workflow, matches_draft
 from app.pipeline.merge import is_placeholder, merge_turn
 from app.pipeline.planner import plan_turn
-from app.pipeline.questions import confirm_new_request_question, match_option, next_question, render
+from app.pipeline.questions import (
+    CLARIFY_TARGET,
+    clarify_question,
+    confirm_new_request_question,
+    match_option,
+    next_question,
+    render,
+)
 from app.pipeline.validation import display, is_ready
 from app.state.machine import TURN_SCRATCH, as_update, mode_for_new_message, start_fresh, yes_no
 from app.state.models import LogEntry, Message, WorkflowState
@@ -31,7 +39,8 @@ RATE_LIMITED = ("The AI service has reached its usage limit for now, so I couldn
                 "Please try again in {wait}. Your answers so far are kept.")
 READY_REPLY = "Great! I have everything I need. Generating your workflow…"
 GENERATION_FAILED = "I have every detail, but the workflow did not pass its final checks. Could you tell me what to change?"
-NEW_REQUEST_CONFIRM = "That sounds like a new automation. Should I start a new workflow for it? The current one{name} will be discarded."
+NEW_REQUEST_CONFIRM = ("That sounds like a new automation. Should I start a new workflow for it? "
+                       "The current one{name} will be {fate}.")
 KEEP_CURRENT = "Okay, I'll keep the current workflow."
 NOTHING_CHANGED = "I couldn't tell what to change. Which step or setting should I update, and to what?"
 
@@ -81,9 +90,17 @@ def build_graph(llm: StructuredLLM):
         result = state.plan
         kind = result.message_kind if result else "build"
         if kind == "new_request" and (state.has_answers() or state.workflow) and not state.picked:
-            text = NEW_REQUEST_CONFIRM.format(name=f' ("{state.workflow.name}")' if state.workflow else "")
+            # Only a generated workflow is kept; answers to an unfinished one are dropped.
+            text = NEW_REQUEST_CONFIRM.format(name=f' ("{state.workflow.name}")' if state.workflow else "",
+                                              fate="saved under Previous workflows" if state.workflow else "discarded")
             question = confirm_new_request_question(text)
             return {"pending_new_request": state.latest_user_message, "question": question,
+                    "reply": render(question), "reply_route": "respond"}
+        if kind == "unclear" and state.steps and not state.picked:
+            # Several readings: nothing from the plan is merged, the user picks the one they meant.
+            question = clarify_question(state, result.next_question)
+            log = [*state.log, LogEntry(turn=state.turn, field=CLARIFY_TARGET, event="asked")]
+            return {"target": CLARIFY_TARGET, "question": question, "log": log,
                     "reply": render(question), "reply_route": "respond"}
         answer = (result.answer or "").strip() if result and kind == "question" else ""
         if kind in ("question", "other") and state.mode == "post_generation" and not state.picked:
@@ -91,10 +108,11 @@ def build_graph(llm: StructuredLLM):
             return {"reply": answer or workflow_summary(state), "reply_route": "respond"}
         # While collecting, the plan is always merged: merge keeps only what the user really said.
         merged = merge_turn(state, result)
-        update = as_update(merged)
         if state.llm_failed and not merged.changes:
-            update["reply"] = state.reply or AI_UNAVAILABLE
-        elif state.llm_failed:
+            # Nothing was read: show only the error, so the user retries their message instead of a new question.
+            return {"reply": state.reply or AI_UNAVAILABLE, "reply_route": "respond"}
+        update = as_update(merged)
+        if state.llm_failed:
             update["reply"] = None  # a picked option was still applied in code
         elif answer:
             update["reply"] = answer
@@ -106,7 +124,7 @@ def build_graph(llm: StructuredLLM):
     def check(state: WorkflowState) -> dict[str, Any]:
         if not is_ready(state):
             return {"reply_route": "ask"}
-        if state.workflow is None:
+        if not matches_draft(state.workflow, state):
             return {"reply_route": "generate"}
         reply = NOTHING_CHANGED if state.mode == "post_generation" else workflow_summary(state)
         return {"mode": "ready", "reply": state.reply or reply, "reply_route": "respond"}
@@ -129,12 +147,15 @@ def build_graph(llm: StructuredLLM):
         except GenerationError:
             logger.exception("generated workflow failed its checks")
             return {"reply": GENERATION_FAILED, "reply_route": "respond"}
-        prefix = "Updated " + "; ".join(state.changes) + ". " if state.mode == "post_generation" and state.changes else ""
+        # An edit, even one that took several turns, replaces the earlier version, which is kept.
+        previous = [*state.previous_workflows, state.workflow] if state.workflow else state.previous_workflows
+        prefix = "Updated " + "; ".join(state.changes) + ". " if state.workflow and state.changes else ""
         chain = " → ".join(n.name for n in workflow.nodes if n.type != "end")
         reply = (f"{prefix}{READY_REPLY}\n\nYour workflow \"{workflow.name}\" is ready: {chain}. "
                  "The diagram and JSON are below. Ask me anything about it, tell me what to change, "
                  "or describe a new automation.")
-        return {"workflow": workflow, "mode": "ready", "target": None, "reply": reply, "reply_route": "respond"}
+        return {"workflow": workflow, "previous_workflows": previous, "mode": "ready", "target": None, "reply": reply,
+                "reply_route": "respond"}
 
     def respond(state: WorkflowState) -> dict[str, Any]:
         options = [o.label for o in state.question.options] if state.question else []

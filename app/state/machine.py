@@ -43,9 +43,10 @@ def yes_no(message: str) -> Answer:
 
 
 def start_fresh(state: WorkflowState, request: str) -> WorkflowState:
-    """A clean state for a new automation. Only the chat transcript is carried over."""
+    """A clean state for a new automation. The chat transcript and every generated workflow are carried over."""
+    previous = [*state.previous_workflows, *([state.workflow] if state.workflow else [])]
     return WorkflowState(
-        messages=list(state.messages), turn=state.turn, latest_user_message=request,
+        messages=list(state.messages), turn=state.turn, latest_user_message=request, previous_workflows=previous,
     )
 
 

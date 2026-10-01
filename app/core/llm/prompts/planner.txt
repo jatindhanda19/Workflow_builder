@@ -18,6 +18,9 @@ PARAMETERS
 
 MESSAGE KIND
 11. build: the user describes the automation, answers a question or asks to change something (this is the usual kind; a request such as "every friday send X" is build, not question). question: they ask about the current workflow; put a 1-3 sentence answer, from CURRENT DRAFT only, in answer. new_request: the draft is not empty and they describe a DIFFERENT automation. other: greetings, thanks.
+    unclear: the latest message asks for a change but has more than one reasonable reading, so acting on it means guessing: which step it applies to ("also add small message": the Airtable record, the email, or both?), who or where it goes ("send it to the team": which email address or channel?), or which data is meant ("save the details": which details?). Then return CURRENT DRAFT unchanged and set next_question with target "clarify": one short question naming the readings ("Where should I add the message: to the Airtable record, the confirmation email, or both?") and 2-4 options, one per reading, phrased as full answers ("Add it to the confirmation email"). Never pick a reading yourself.
+    NOT unclear: a message that plainly answers LAST QUESTION ("Use Gmail" after asking which email app; a picked option), or that names the step and the value. Those are build.
+    A vague description of content ("a small message", "some details", "a note") is never a value: leave the value null and ask for the actual text or items.
 
 NEXT QUESTION (multiple choice)
 12. If anything is missing (an app that is null, or a required parameter without a value), set next_question to ONE item of the EARLIEST step that still has something missing, so the questions walk through the automation in order: first the trigger, then each following step. Within a step, ask the app before its settings, and the setting that decides the others first (e.g. frequency before day). Target "<step id>.<param name>", or "<step id>.app" for a missing app.
@@ -31,6 +34,6 @@ NEXT QUESTION (multiple choice)
     - other kinds: complete answers in the right format (6:00 PM, Asia/Kolkata, #sales, a column name, a short message text). Reuse names the user mentioned. For message texts, write ready-to-use messages that include the relevant data, e.g. "New order {{shopify_trigger.order_number}} for {{shopify_trigger.total_price}}". Offer {{step.field}} expressions when the data comes from an earlier step. Never invent email addresses, URLs or IDs the user did not give; then give fewer or no options.
     - Never add "Other" or "Custom": the user can always type their own answer.
 15. If the request is too vague to plan even the trigger and one action ("notify me when something important happens"), return no steps and set next_question with target "workflow.goal": a clarifying question and 3-4 concrete automations, phrased as full requests, that fit what the user said (e.g. "When a new email from my boss arrives in Gmail, send me a Slack message").
-16. If nothing is missing, next_question is null.
+16. If nothing is missing and the message is not unclear, next_question is null.
 
 

@@ -41,6 +41,11 @@ class QuestionView(BaseModel):
     allow_custom: bool
 
 
+class WorkflowView(BaseModel):
+    workflow: dict[str, Any]
+    diagram: str
+
+
 class ChatResponse(BaseModel):
     session_id: str
     reply: str
@@ -51,6 +56,7 @@ class ChatResponse(BaseModel):
     fields: list[FieldView]
     workflow: dict[str, Any] | None
     diagram: str | None
+    previous_workflows: list[WorkflowView]  # generated earlier in this session, oldest first
 
 
 class SessionView(ChatResponse):
@@ -87,7 +93,12 @@ def _summary(session_id: str, state: WorkflowState) -> dict:
         "fields": fields,
         "workflow": workflow,
         "diagram": to_mermaid(workflow) if workflow else None,
+        "previous_workflows": [_workflow_view(w.model_dump(by_alias=True)) for w in state.previous_workflows],
     }
+
+
+def _workflow_view(workflow: dict) -> WorkflowView:
+    return WorkflowView(workflow=workflow, diagram=to_mermaid(workflow))
 
 
 def _question_view(state: WorkflowState) -> QuestionView | None:

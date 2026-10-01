@@ -34,7 +34,6 @@ def is_placeholder(step: Step) -> bool:
 def merge_turn(state: WorkflowState, plan: TurnPlan | None) -> WorkflowState:
     new = state.model_copy(deep=True)
     merger = _Merger(new)
-    before = _snapshot(new)
     if plan is not None:
         if plan.workflow_name:
             new.name = plan.workflow_name.strip() or new.name
@@ -45,8 +44,7 @@ def merge_turn(state: WorkflowState, plan: TurnPlan | None) -> WorkflowState:
     if new.steps or asks_about_a_step:
         # An empty plan that still asks about a step ("trigger.app") starts from trigger → action placeholders.
         new.steps = _structured(new.steps)
-    if _snapshot(new) != before:
-        new.workflow = None
+    # A generated workflow is kept across turns; check() regenerates it once the changed draft is complete.
     return new
 
 
@@ -227,7 +225,3 @@ def _unique(base: str, taken: set[str]) -> str:
     while candidate in taken:
         candidate, index = f"{base}_{index}", index + 1
     return candidate
-
-
-def _snapshot(state: WorkflowState) -> list:
-    return [(s.id, s.kind, s.app, s.operation, [(p.name, p.value) for p in s.params]) for s in state.steps]

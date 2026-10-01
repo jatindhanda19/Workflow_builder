@@ -1,12 +1,16 @@
+import html
 import json
 import os
 import uuid
 
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8001")
 REQUEST_TIMEOUT = 90
+MERMAID_JS = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs"
+DIAGRAM_HEIGHT = 260
 
 MODE_LABELS = {
     "collecting": ("Collecting information", "🟡"),
@@ -110,11 +114,50 @@ def render_sidebar(view: dict | None) -> None:
         st.button("New conversation", on_click=reset_conversation, use_container_width=True)
 
 
-def render_workflow(workflow: dict) -> None:
+def render_diagram(diagram: str) -> None:
+    """The Mermaid flowchart from the backend, drawn in the browser by mermaid.js."""
+    components.html(
+        f"""
+        <div class="mermaid" style="background:#ffffff;border-radius:8px;padding:16px;text-align:center">
+        {html.escape(diagram)}
+        </div>
+        <script type="module">
+          import mermaid from "{MERMAID_JS}";
+          mermaid.initialize({{ startOnLoad: true, theme: "neutral", securityLevel: "strict" }});
+        </script>
+        """,
+        height=DIAGRAM_HEIGHT,
+        scrolling=True,
+    )
+
+
+def render_workflow(workflow: dict, diagram: str | None, editing: bool = False) -> None:
     st.divider()
     meta = workflow["metadata"]
     st.subheader(f"Workflow: {meta['name']}")
     st.caption(meta["trigger_summary"])
+    if editing:
+        st.info("Showing the last generated version. It updates once your changes are complete.")
+    render_workflow_body(workflow, diagram)
+
+
+def render_previous_workflows(previous: list[dict]) -> None:
+    """Workflows generated earlier in this session, newest first."""
+    if not previous:
+        return
+    st.divider()
+    st.subheader("Previous workflows")
+    for number, item in reversed(list(enumerate(previous, 1))):
+        meta = item["workflow"]["metadata"]
+        with st.expander(f"{number}. {meta['name']} · {meta['created_at']}"):
+            st.caption(meta["trigger_summary"])
+            render_workflow_body(item["workflow"], item["diagram"])
+
+
+def render_workflow_body(workflow: dict, diagram: str | None) -> None:
+    if diagram:
+        st.markdown("**Flowchart**")
+        render_diagram(diagram)
 
     steps, raw = st.columns(2)
     with steps:
@@ -152,7 +195,9 @@ def main() -> None:
         render_options(view.get("question"))
     render_sidebar(view)
     if view and view["workflow"]:
-        render_workflow(view["workflow"])
+        render_workflow(view["workflow"], view.get("diagram"), editing=view["mode"] == "collecting")
+    if view:
+        render_previous_workflows(view.get("previous_workflows", []))
 
 
 main()
