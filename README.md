@@ -46,26 +46,72 @@ collected `fields`, and, once generated, the `workflow` JSON and a Mermaid `diag
 ## Project structure
 
 ```
-app/
-├── main.py                     # FastAPI app and HTTP endpoints (entry point)
-├── core/
-│   ├── config.py               #   settings from .env (provider, model, keys)
-│   └── llm/                    #   LLM client: strict JSON schemas, retries
-│       ├── client.py
-│       └── prompts/planner.txt #   the planner prompt
-├── pipeline/
-│   ├── graph.py                # LangGraph wiring of one turn
-│   ├── planner.py              # 1. AI: design the workflow, predict the next MCQ
-│   ├── planner_schema.py       #    what the planner returns
-│   ├── merge.py                # 2. code: ground, validate and keep earlier answers
-│   ├── validation.py           # 3. code: per-kind validation and readiness
-│   ├── normalize.py            #    times, timezones, lists, channels
-│   ├── questions.py            # 4. the MCQ: checked target, validated options
-│   ├── generation/             # 5. workflow JSON (no LLM) and its checks
-│   └── diagram/mermaid.py      # 6. flow diagram
-└── state/                      # session state: models, modes, in-memory store
-frontend/
-└── streamlit_app.py            # chat UI, option buttons, diagram and JSON
+workflow-builder/
+├── app/                              # Backend package
+│   ├── main.py                       # FastAPI app and HTTP endpoints (entry point)
+│   │
+│   ├── core/                         # Shared infrastructure
+│   │   ├── config.py                 #   settings loaded from .env (provider, model, keys)
+│   │   └── llm/                      #   LLM client: strict JSON schemas, retries
+│   │       ├── client.py
+│   │       └── prompts/              #   prompt templates (.txt)
+│   │
+│   ├── pipeline/                     # One conversation turn, stage by stage
+│   │   ├── graph.py                  #   LangGraph wiring of the stages below
+│   │   ├── intent/                   #   1. what is the user's goal?
+│   │   │   ├── classifier.py         #      goal-first intent classification
+│   │   │   ├── rules.py              #      rule-based fast path
+│   │   │   ├── followup.py           #      post-generation: question / edit / new request
+│   │   │   └── schema.py
+│   │   ├── extraction/               #   2. pull field values out of the message
+│   │   │   ├── extract.py
+│   │   │   ├── normalize.py          #      email / text / yes-no normalisation
+│   │   │   └── schema.py
+│   │   ├── planning/                 #   3. which nodes and fields apply
+│   │   │   ├── plan.py
+│   │   │   └── facts.py
+│   │   ├── validation/               #   4. are the answers valid and complete?
+│   │   │   ├── fields.py             #      per-field validation
+│   │   │   ├── consistency.py        #      cross-field conflict detection
+│   │   │   └── readiness.py          #      decides when the workflow is complete
+│   │   ├── questions/                #   5. pick and phrase the next question
+│   │   │   ├── selector.py
+│   │   │   └── ack.py                #      acknowledgement messages
+│   │   ├── generation/               #   6. build the workflow JSON (no LLM)
+│   │   │   ├── builder.py
+│   │   │   ├── checks.py             #      output schema validation
+│   │   │   └── schema.py
+│   │   └── diagram/                  #   7. flow diagram from the workflow JSON
+│   │       ├── builder.py
+│   │       └── mermaid.py
+│   │
+│   ├── registry/                     # Domain data: node types and their fields
+│   │   ├── model.py                  #   NodeType / FieldDef definitions
+│   │   ├── nodes.py                  #   all node types (add new ones here)
+│   │   └── display.py                #   human-readable values and summaries
+│   │
+│   └── state/                        # Session state across turns
+│       ├── models.py                 #   WorkflowState and related models
+│       ├── machine.py                #   modes: collecting → ready → post_generation
+│       ├── updater.py                #   merges each turn's extraction into state
+│       └── store.py                  #   in-memory session store
+│
+├── frontend/
+│   └── streamlit_app.py              # Chat UI; talks to the backend over HTTP
+│
+├── docs/
+│   └── DECISIONS.md                  # Design decisions and how to extend
+│
+├── tests/                            # pytest suite
+│   ├── conftest.py
+│   ├── test_units.py
+│   ├── test_conversations.py
+│   ├── test_generalization.py
+│   └── test_demo_regressions.py      # replays of real demo failures
+│
+├── requirements.txt
+├── .env.example                      # Copy to .env and fill in keys
+└── README.md
 ```
 
 ## How one turn works
@@ -78,6 +124,9 @@ user message (or picked option)
         ├─ no  → ask       → multiple-choice question
         └─ yes → generate  → workflow JSON → diagram
 ```
+
+See the docstring at the top of [app/pipeline/graph.py](app/pipeline/graph.py) for the full graph, and
+[docs/DECISIONS.md](docs/DECISIONS.md) for why it is built this way.
 
 ## Running locally
 
@@ -97,11 +146,8 @@ streamlit run frontend/streamlit_app.py
 
 The frontend reads `API_URL` from the environment (default `http://127.0.0.1:8001`).
 
-### Rate limits
+## Tests
 
-Groq's free tier limits tokens per model per day. When the main model (`LLM_MODEL`,
-default `openai/gpt-oss-120b`) hits its limit, the backend switches to
-`LLM_FALLBACK_MODEL` (default `openai/gpt-oss-20b`, which has its own quota). It stays
-on the fallback until the provider's wait time is over. If every model is limited,
-the chat says when to try again and keeps the answers given so far. Set
-`LLM_FALLBACK_MODEL=none` to disable the fallback.
+```bash
+pytest
+```
