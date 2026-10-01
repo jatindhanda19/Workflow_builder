@@ -1,53 +1,62 @@
-from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.pipeline.extraction.schema import Extraction
 from app.pipeline.generation.schema import Workflow
-from app.pipeline.intent.schema import FollowUpDecision, IntentResult
+from app.pipeline.planner_schema import ParamKind, StepKind, TurnPlan
 
 FieldValue = str | list[str]
 Mode = Literal["collecting", "ready", "post_generation"]
-FieldStatus = Literal["filled", "ambiguous", "missing", "not_applicable"]
-TargetKind = Literal["missing", "ambiguous", "conflict"]
-LogEvent = Literal[
-    "asked", "filled", "ambiguous", "conflict", "overwritten", "kept", "reopened", "derived", "ignored", "cleared",
-]
-PERSON_WORDS = frozenset({
-    "client", "customer", "team", "manager", "user", "member", "employee", "vendor", "supplier", "lead",
-    "contact", "subscriber", "student", "partner", "boss", "colleague", "staff",
-})
+LogEvent = Literal["asked", "filled", "overwritten", "rejected", "ignored", "cleared"]
+APP = "app"  # pseudo-parameter: the app of a step that is not decided yet
 
 
 class Message(BaseModel):
     role: Literal["user", "assistant"]
     content: str
+    options: list[str] = Field(default_factory=list)  # the MCQ options shown with this message
 
 
-class Option(BaseModel):
-    """One interpretation of an ambiguous answer and the values it sets (None clears a field)."""
-
+class QuestionOption(BaseModel):
     label: str
-    assign: dict[str, FieldValue | None] = Field(default_factory=dict)
-    keywords: list[str] = Field(default_factory=list)
 
 
-class FieldEntry(BaseModel):
-    key: str
-    status: Literal["filled", "ambiguous"]
+class Question(BaseModel):
+    """The multiple-choice question shown to the user. `target` is "<step id>.<parameter>"."""
+
+    target: str | None = None
+    step: str | None = None  # which step of the automation the question is about
+    text: str
+    options: list[QuestionOption] = Field(default_factory=list)
+    allow_custom: bool = True
+
+
+class Param(BaseModel):
+    name: str
+    label: str
+    description: str = ""
+    kind: ParamKind = "text"
+    choices: list[str] = Field(default_factory=list)
+    required: bool = True
     value: FieldValue | None = None
-    phrase: str | None = None
-    reason: str | None = None
-    question: str | None = None
-    options: list[Option] = Field(default_factory=list)
-    source: Literal["user", "derived"] = "user"
+    note: str | None = None  # why the last answer was rejected
 
 
-class Conflict(BaseModel):
-    key: str
-    old: FieldValue
-    new: FieldValue
+class Step(BaseModel):
+    """One n8n-style node: a trigger, an action in any app, or a condition."""
+
+    id: str
+    kind: StepKind
+    app: str | None = None  # None until the user names it
+    operation: str
+    params: list[Param] = Field(default_factory=list)
+
+    @property
+    def title(self) -> str:
+        return f"{self.app}: {self.operation}" if self.app else self.operation
+
+    def param(self, name: str) -> Param | None:
+        return next((p for p in self.params if p.name == name), None)
 
 
 class LogEntry(BaseModel):
@@ -57,66 +66,37 @@ class LogEntry(BaseModel):
     detail: str = ""
 
 
-class IntentState(BaseModel):
-    direction: str | None = None
-    entities: list[str] = Field(default_factory=list)
-    data_sources: list[str] = Field(default_factory=list)
-    cardinality: Literal["single", "multiple", "dynamic"] | None = None
-
-    @property
-    def main_entity(self) -> str | None:
-        return next((e for e in self.entities if _singular(e) not in PERSON_WORDS), None)
-
-    @property
-    def recipient_entity(self) -> str | None:
-        return next((e for e in self.entities if _singular(e) in PERSON_WORDS), None)
-
-
 class WorkflowState(BaseModel):
     messages: list[Message] = Field(default_factory=list)
     latest_user_message: str = ""
     turn: int = 0
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
     mode: Mode = "collecting"
-    original_request: str | None = None
-    intent: IntentState = Field(default_factory=IntentState)
-    fields: dict[str, FieldEntry] = Field(default_factory=dict)
-    conflicts: list[Conflict] = Field(default_factory=list)
+    name: str | None = None
+    steps: list[Step] = Field(default_factory=list)
     log: list[LogEntry] = Field(default_factory=list)
 
-    target_field: str | None = None
-    target_kind: TargetKind | None = None
+    question: Question | None = None
+    target: str | None = None
     pending_new_request: str | None = None
     workflow: Workflow | None = None
 
     # Scratch values for the current turn, reset on every message.
-    intent_result: IntentResult | None = None
-    extraction: Extraction | None = None
+    plan: TurnPlan | None = None
+    picked: str | None = None
     llm_failed: bool = False
-    followup: FollowUpDecision | None = None
-    edit_mode: bool = False
     changes: list[str] = Field(default_factory=list)
-    acks: list[str] = Field(default_factory=list)
     reply: str | None = None
     reply_route: str | None = None
 
-    def values(self) -> dict[str, FieldValue]:
-        """Values of filled fields only. Ambiguous entries never count as values."""
-        return {
-            key: entry.value
-            for key, entry in self.fields.items()
-            if entry.status == "filled" and entry.value is not None
-        }
+    def step(self, step_id: str) -> Step | None:
+        return next((s for s in self.steps if s.id == step_id), None)
 
-    def is_filled(self, key: str) -> bool:
-        entry = self.fields.get(key)
-        return entry is not None and entry.status == "filled"
+    def user_text(self) -> str:
+        return "\n".join(m.content for m in self.messages if m.role == "user")
 
-    def asked_details(self, key: str) -> list[str]:
-        return [item.detail for item in self.log if item.field == key and item.event == "asked"]
+    def asked_count(self, key: str) -> int:
+        return sum(1 for item in self.log if item.field == key and item.event == "asked")
 
-
-def _singular(word: str) -> str:
-    word = word.lower().strip()
-    return word[:-1] if word.endswith("s") and not word.endswith("ss") else word
+    def has_answers(self) -> bool:
+        return any(s.app for s in self.steps) or any(p.value is not None for s in self.steps for p in s.params)

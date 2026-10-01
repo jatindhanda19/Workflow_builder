@@ -13,6 +13,7 @@ MODE_LABELS = {
     "ready": ("Workflow generated", "🟢"),
     "post_generation": ("Workflow generated", "🟢"),
 }
+LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 STATUS_ICONS = {"filled": "✅ filled", "ambiguous": "⚠️ ambiguous", "missing": "❌ missing"}
 
 st.set_page_config(page_title="Workflow Builder", page_icon="🧩", layout="wide")
@@ -31,7 +32,7 @@ def reset_conversation() -> None:
             requests.delete(f"{API_URL}/sessions/{old_id}", timeout=10)
         except requests.RequestException:
             pass
-    for key in ("session_id", "messages", "view"):
+    for key in ("session_id", "messages", "view", "picked"):
         st.session_state.pop(key, None)
     init_state()
 
@@ -59,6 +60,21 @@ def send_message(text: str) -> None:
     view = response.json()
     st.session_state.view = view
     st.session_state.messages.append({"role": "assistant", "content": view["reply"]})
+
+
+def pick_option(label: str) -> None:
+    st.session_state.picked = label
+
+
+def render_options(question: dict | None) -> None:
+    """The current question's options as buttons; a click sends that option as the answer."""
+    if not question or not question["options"]:
+        return
+    for i, label in enumerate(question["options"]):
+        st.button(f"{LETTERS[i]}. {label}", key=f"option-{len(st.session_state.messages)}-{i}",
+                  on_click=pick_option, args=(label,), use_container_width=True)
+    if question["allow_custom"]:
+        st.caption("Or type your own answer below.")
 
 
 def _show(value) -> str:
@@ -119,9 +135,10 @@ def render_workflow(workflow: dict) -> None:
 def main() -> None:
     init_state()
     st.title("Conversational Workflow Builder")
-    st.caption("Describe an automation. I will ask for anything I need and never guess it.")
+    st.caption("Describe an automation. I will ask question I need and never guess it.")
 
-    prompt = st.chat_input("Describe the workflow you want to build")
+    prompt = st.chat_input("Describe the workflow you want to build, or answer the question")
+    prompt = prompt or st.session_state.pop("picked", None)
     if prompt:
         with st.spinner("Thinking..."):
             send_message(prompt)
@@ -131,6 +148,8 @@ def main() -> None:
             st.markdown(message["content"])
 
     view = st.session_state.view
+    if view:
+        render_options(view.get("question"))
     render_sidebar(view)
     if view and view["workflow"]:
         render_workflow(view["workflow"])

@@ -6,12 +6,12 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.config import ConfigError, load_settings
-from app.pipeline.graph import build_graph, run_turn
 from app.core.llm import build_llm
-from app.pipeline.planning import build_plan
+from app.pipeline.diagram.mermaid import to_mermaid
+from app.pipeline.graph import build_graph, run_turn
+from app.pipeline.validation import is_ready, rows
 from app.state.models import FieldValue, Message, Mode, WorkflowState
 from app.state.store import SessionStore
-from app.pipeline.validation.readiness import evaluate
 
 app = FastAPI(title="Workflow Builder")
 store = SessionStore()
@@ -32,14 +32,25 @@ class FieldView(BaseModel):
     required: bool
 
 
+class QuestionView(BaseModel):
+    """The current multiple-choice question. Sending an option's label (or its letter) answers it."""
+
+    target: str | None
+    text: str
+    options: list[str]
+    allow_custom: bool
+
+
 class ChatResponse(BaseModel):
     session_id: str
     reply: str
     mode: Mode
     all_collected: bool
     asking_field: str | None
+    question: QuestionView | None
     fields: list[FieldView]
     workflow: dict[str, Any] | None
+    diagram: str | None
 
 
 class SessionView(ChatResponse):
@@ -60,22 +71,31 @@ def get_graph():
 
 def _summary(session_id: str, state: WorkflowState) -> dict:
     reply = next((m.content for m in reversed(state.messages) if m.role == "assistant"), "")
-    readiness = evaluate(state, build_plan(state.values(), state.intent.cardinality))
     fields = [
-        FieldView(key=r.key, node=r.node, parameter=r.label, value=r.value, status=r.status,
+        FieldView(key=r.key, node=r.step, parameter=r.label, value=r.value, status=r.status,
                   note=r.note, required=r.required)
-        for r in readiness.rows
-        if r.status != "not_applicable"
+        for r in rows(state)
     ]
+    workflow = state.workflow.model_dump(by_alias=True) if state.workflow else None
     return {
         "session_id": session_id,
         "reply": reply,
         "mode": state.mode,
-        "all_collected": readiness.ready,
-        "asking_field": state.target_field,
+        "all_collected": is_ready(state),
+        "asking_field": state.target,
+        "question": _question_view(state),
         "fields": fields,
-        "workflow": state.workflow.model_dump(by_alias=True) if state.workflow else None,
+        "workflow": workflow,
+        "diagram": to_mermaid(workflow) if workflow else None,
     }
+
+
+def _question_view(state: WorkflowState) -> QuestionView | None:
+    question = state.question
+    if question is None:
+        return None
+    return QuestionView(target=question.target, text=question.text, options=[o.label for o in question.options],
+                        allow_custom=question.allow_custom)
 
 
 @app.get("/health")

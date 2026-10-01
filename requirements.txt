@@ -8,5 +8,4 @@ langchain-openai>=0.3
 python-dotenv>=1.0
 streamlit>=1.40
 requests>=2.32
-pytest>=8.0
-httpx>=0.27
+jsonschema>=4.0

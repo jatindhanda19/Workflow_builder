@@ -1,28 +1,26 @@
 """Session modes and the transitions between them.
 
-    COLLECTING ──(every required, applicable field filled and valid)──> READY
+    COLLECTING ──(every app and required parameter known)──> READY
     READY ──(next user message)──> POST_GENERATION
-    POST_GENERATION ──question──> POST_GENERATION (answered from state)
-    POST_GENERATION ──edit──> field overwritten or reopened ──> COLLECTING or READY (regenerated)
+    POST_GENERATION ──question──> POST_GENERATION (answered from the draft)
+    POST_GENERATION ──edit──> values changed ──> COLLECTING or READY (regenerated)
     POST_GENERATION ──new request──> confirm ──yes──> fresh COLLECTING state
 """
 
 import re
 from typing import Literal
 
-from app.registry import NO, YES
 from app.state.models import Mode, WorkflowState
 
 Answer = Literal["yes", "no", "unclear"]
+YES = ("yes", "y", "yeah", "yep", "sure", "please do", "ok", "okay", "correct", "right")
+NO = ("no", "n", "nope", "nah", "don't", "do not")
 
 TURN_SCRATCH = {
-    "intent_result": None,
-    "extraction": None,
+    "plan": None,
+    "picked": None,
     "llm_failed": False,
-    "followup": None,
-    "edit_mode": False,
     "changes": [],
-    "acks": [],
     "reply": None,
 }
 
@@ -47,7 +45,7 @@ def yes_no(message: str) -> Answer:
 def start_fresh(state: WorkflowState, request: str) -> WorkflowState:
     """A clean state for a new automation. Only the chat transcript is carried over."""
     return WorkflowState(
-        messages=list(state.messages), turn=state.turn, latest_user_message=request, original_request=request,
+        messages=list(state.messages), turn=state.turn, latest_user_message=request,
     )
 
 

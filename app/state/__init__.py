@@ -1,1 +1,1 @@
-"""Session state machine and collected-fields store."""
+"""Session state: models, modes and the in-memory store."""
