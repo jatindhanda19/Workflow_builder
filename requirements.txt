@@ -4,14 +4,9 @@ pydantic>=2.7
 langgraph>=0.6
 langchain-core>=0.3
 langchain-groq>=0.3
-langchain-openai>=0.3
 python-dotenv>=1.0
 streamlit>=1.40
 requests>=2.32
-<<<<<<< HEAD
 jsonschema>=4.0
-=======
 pytest>=8.0
 httpx>=0.27
-jsonschema>=4 
->>>>>>> 568fd37403f9974354a0cc7e6b2abeb44e9fc5f3

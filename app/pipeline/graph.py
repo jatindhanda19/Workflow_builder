@@ -18,7 +18,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.core.llm import LLMError, RateLimitedError, StructuredLLM
 from app.pipeline.generation.builder import GenerationError, generate_workflow, matches_draft
-from app.pipeline.merge import is_placeholder, merge_turn
+from app.pipeline.merge import is_placeholder, merge_turn, typed_app_answer
 from app.pipeline.planner import plan_turn
 from app.pipeline.questions import (
     CLARIFY_TARGET,
@@ -28,9 +28,9 @@ from app.pipeline.questions import (
     next_question,
     render,
 )
-from app.pipeline.validation import display, is_ready
+from app.pipeline.validation import display, is_ready, links, structure_errors
 from app.state.machine import TURN_SCRATCH, as_update, mode_for_new_message, start_fresh, yes_no
-from app.state.models import LogEntry, Message, WorkflowState
+from app.state.models import LogEntry, Message, Question, WorkflowState
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ def build_graph(llm: StructuredLLM):
             question = confirm_new_request_question(text)
             return {"pending_new_request": state.latest_user_message, "question": question,
                     "reply": render(question), "reply_route": "respond"}
-        if kind == "unclear" and state.steps and not state.picked:
+        if kind == "unclear" and state.steps and not state.picked and not typed_app_answer(state):
             # Several readings: nothing from the plan is merged, the user picks the one they meant.
             question = clarify_question(state, result.next_question)
             log = [*state.log, LogEntry(turn=state.turn, field=CLARIFY_TARGET, event="asked")]
@@ -108,7 +108,9 @@ def build_graph(llm: StructuredLLM):
             return {"reply": answer or workflow_summary(state), "reply_route": "respond"}
         # While collecting, the plan is always merged: merge keeps only what the user really said.
         merged = merge_turn(state, result)
-        if state.llm_failed and not merged.changes:
+        handled = merged.changes or any(e.turn == merged.turn and e.field == state.target and e.event == "rejected"
+                                        for e in merged.log)
+        if state.llm_failed and not handled:
             # Nothing was read: show only the error, so the user retries their message instead of a new question.
             return {"reply": state.reply or AI_UNAVAILABLE, "reply_route": "respond"}
         update = as_update(merged)
@@ -131,6 +133,10 @@ def build_graph(llm: StructuredLLM):
 
     def ask(state: WorkflowState) -> dict[str, Any]:
         predicted = next_question(state, state.plan.next_question if state.plan else None)
+        problems = structure_errors(state) if predicted is None else []
+        if problems:
+            # Every value is known but a condition is not set up as the user said: ask about it, don't guess.
+            predicted = CLARIFY_TARGET, Question(target=CLARIFY_TARGET, text=problems[0])
         if predicted is None:
             return {"reply_route": "respond"}
         target, question = predicted
@@ -150,7 +156,7 @@ def build_graph(llm: StructuredLLM):
         # An edit, even one that took several turns, replaces the earlier version, which is kept.
         previous = [*state.previous_workflows, state.workflow] if state.workflow else state.previous_workflows
         prefix = "Updated " + "; ".join(state.changes) + ". " if state.workflow and state.changes else ""
-        chain = " → ".join(n.name for n in workflow.nodes if n.type != "end")
+        chain = workflow.metadata.description
         reply = (f"{prefix}{READY_REPLY}\n\nYour workflow \"{workflow.name}\" is ready: {chain}. "
                  "The diagram and JSON are below. Ask me anything about it, tell me what to change, "
                  "or describe a new automation.")
@@ -193,8 +199,17 @@ def _structure(state: WorkflowState) -> list[tuple[str, str | None]]:
 
 
 def _plan_text(state: WorkflowState) -> str:
-    roles = {"trigger": "When", "condition": "If", "action": "Then"}
-    lines = [f"{i}. **{roles[s.kind]}:** {_step_label(s)}" for i, s in enumerate(state.steps, 1)]
+    roles = {"trigger": "When", "condition": "If", "action": "Then", "true": "If yes", "false": "Otherwise"}
+    steps, parents = state.steps, links(state.steps)
+    titles = {s.id: s.title for s in steps}
+    lines = []
+    for i, step in enumerate(steps, 1):
+        follows = parents.get(step.id, [])
+        branch = next((b for _, b in follows if b), None)
+        line = f"{i}. **{roles[branch or step.kind]}:** {_step_label(step)}"
+        if i > 2 and [p for p, _ in follows] != [steps[i - 2].id]:  # not simply after the step above it
+            line += f" _(after {', '.join(titles.get(p, p) for p, _ in follows)})_"
+        lines.append(line)
     return "Here's the plan:\n\n" + "\n".join(lines)
 
 

@@ -3,7 +3,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.pipeline.generation.schema import Workflow
-from app.pipeline.planner_schema import ParamKind, StepKind, TurnPlan
+from app.pipeline.normalize import OPERATOR_SYMBOLS, UNARY_OPERATORS
+from app.pipeline.planner_schema import Branch, ParamKind, StepKind, TurnPlan
 
 FieldValue = str | list[str]
 Mode = Literal["collecting", "ready", "post_generation"]
@@ -49,10 +50,22 @@ class Step(BaseModel):
     kind: StepKind
     app: str | None = None  # None until the user names it
     operation: str
+    after: list[str] = Field(default_factory=list)  # earlier steps this one follows; empty: the step just before it
+    branch: Branch | None = None  # the outcome of the condition it follows: true / false
     params: list[Param] = Field(default_factory=list)
 
     @property
     def title(self) -> str:
+        if self.kind == "condition":
+            # "order.total > 50000?" or "customer.email is empty?" once known, rather than the node name "If: If".
+            field, operator, value = (self.param(n) for n in ("field", "operator", "value"))
+            if field and operator and None not in (field.value, operator.value):
+                symbol = OPERATOR_SYMBOLS.get(str(operator.value), operator.value)
+                if operator.value in UNARY_OPERATORS:
+                    return f"{field.value} {symbol}?"
+                if value and value.value is not None:
+                    return f"{field.value} {symbol} {value.value}?"
+            return self.operation if self.operation.lower() not in ("if", "condition") else "Check condition"
         return f"{self.app}: {self.operation}" if self.app else self.operation
 
     def param(self, name: str) -> Param | None:

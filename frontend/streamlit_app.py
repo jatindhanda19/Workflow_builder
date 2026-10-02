@@ -19,6 +19,7 @@ MODE_LABELS = {
 }
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 STATUS_ICONS = {"filled": "✅ filled", "ambiguous": "⚠️ ambiguous", "missing": "❌ missing"}
+RUN_ICONS = {"ok": "✅", "failed": "❌", "skipped": "⏭️"}
 
 st.set_page_config(page_title="Workflow Builder", page_icon="🧩", layout="wide")
 
@@ -139,6 +140,40 @@ def render_workflow(workflow: dict, diagram: str | None, editing: bool = False) 
     if editing:
         st.info("Showing the last generated version. It updates once your changes are complete.")
     render_workflow_body(workflow, diagram)
+    render_run(meta["created_at"])
+
+
+def render_run(version: str) -> None:
+    """Runs the current workflow on the backend and shows each step's result."""
+    st.markdown("**Run**")
+    st.caption("Runs Manual or Webhook triggers, If, HTTP Request and Slack messages. "
+               "Slack uses SLACK_WEBHOOK_URL from the backend's environment.")
+    raw = st.text_area("Trigger data (JSON)", value="{}", key=f"run-input-{version}", height=100)
+    if st.button("Run", key=f"run-{version}"):
+        try:
+            data = json.loads(raw or "{}")
+        except ValueError:
+            data = None
+        if not isinstance(data, dict):
+            st.error("The trigger data must be a JSON object, e.g. {\"amount\": 120000}.")
+            return
+        try:
+            response = requests.post(f"{API_URL}/sessions/{st.session_state.session_id}/run",
+                                     json={"input": data}, timeout=REQUEST_TIMEOUT)
+        except requests.RequestException as exc:
+            st.error(f"Cannot reach the backend: {exc}")
+            return
+        if not response.ok:
+            st.error(response.json().get("detail", response.text) if "json" in response.headers.get(
+                "content-type", "") else response.text)
+            return
+        st.session_state[f"run-result-{version}"] = response.json()["steps"]
+    for step in st.session_state.get(f"run-result-{version}", []):
+        icon = RUN_ICONS[step["status"]]
+        st.markdown(f"{icon} **{step['name']}** `{step['id']}` · {step['status']}"
+                    + (f": {step['error']}" if step["error"] else ""))
+        if step["output"] is not None:
+            st.json(step["output"], expanded=False)
 
 
 def render_previous_workflows(previous: list[dict]) -> None:

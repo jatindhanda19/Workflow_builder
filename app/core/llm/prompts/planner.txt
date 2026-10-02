@@ -7,12 +7,21 @@ STEPS
 2. id: snake_case and stable. Keep every id from CURRENT DRAFT; only new steps get new ids (e.g. shopify_trigger, send_slack, add_sheet_row, check_amount).
 3. app: the app or built-in node. Set it only when the user named the app, or when their words leave exactly one sensible choice ("every Monday" → Schedule, "when I click a button" → Manual, "if the amount is above 500" → If). Copy those words into app_evidence. If several apps could fit ("notify me", "save it somewhere"), set app to null so the user is asked.
 4. operation: what the step does in that app, in n8n terms ("New order", "On new email", "Send message", "Append row", "Create page", "Create issue").
-5. A condition step: kind "condition", app "If", parameters field, operator (choice: equals, not equals, greater than, less than, contains) and value.
+5. A condition step: kind "condition", app "If", and exactly three parameters:
+   - field (kind field): WHICH data is checked, as a reference such as invoice.amount, order.total, lead.score or file.size. Label it after that data ("Invoice amount field"). It is never a number: in "if the amount is above 100000", the field is invoice.amount and 100000 is the value.
+   - operator (kind operator): greater_than, greater_than_or_equal, less_than, less_than_or_equal, equals, not_equals, contains, not_contains, is_empty, is_not_empty ("above" → greater_than, "at least" → greater_than_or_equal, "is missing" → is_empty).
+   - value (kind number for numeric comparisons, else text): the threshold the field is compared with, e.g. 100000 for "₹1,00,000". Leave it null for is_empty and is_not_empty.
+   If the user answers a question about the field with a number, it is NOT the field and NOT a new value: leave both unchanged.
+5b. after and branch: each step runs after the step just before it in the list, unless "after" names the ids of the earlier steps it follows. A step that follows a condition sets branch "true" (condition met) or "false" (not met: "otherwise", "else"). Each outcome of a condition starts at most one step; later steps on that path just follow it.
+   - "If X, notify the manager; otherwise save it": condition check_x, notify (after ["check_x"], branch "true"), save (after ["check_x"], branch "false"). Never chain the otherwise action after the true action, and never leave the false outcome empty when the user said what to do otherwise.
+   - A step that runs in both cases follows both paths, and only if the user said so: log (after ["notify", "save"]).
+   - A condition can follow a condition outcome: check_vip (after ["check_x"], branch "true").
+   - Without an "otherwise", the false outcome ends the workflow.
 
 PARAMETERS
 6. List the parameters the step needs to run, as configured in n8n, usually 1-4 per step. Never ask for credentials, API keys, passwords, OAuth or connections. required=false for optional settings.
 7. kind: text, long_text (message bodies), list (comma-separated items), email, email_list, url, number, time, timezone, choice (give choices), channel (chat channels). A schedule trigger needs frequency (choice), time and timezone, plus day when the frequency needs one.
-8. value: ONLY what the user actually stated or picked, in any message. Never guess, never fill defaults, never invent. Whenever you set a value, ALWAYS copy the exact user words that state it into evidence ("every friday" for day Friday); a value without evidence is discarded. If unsure, leave value null.
+8. value: ONLY what the user actually stated or picked, in any message. Never guess, never fill defaults, never invent. Whenever you set a value, ALWAYS copy the exact user words that state it into evidence ("every friday" for day Friday); a value without evidence is discarded. If unsure, leave value null. value and evidence are always strings: write a list as comma-separated text ("order id, total, customer email"), never as an array.
 9. Data from an earlier step is written as an n8n expression, e.g. {{shopify_trigger.customer_email}} or {{gmail_trigger.subject}}, but only when the user said to use that data ("send it to the customer", "include the order total").
 10. Keep every value already in CURRENT DRAFT unless the latest message changes it. When the user changes the app or the plan ("use Teams instead of Slack"), rebuild that step and keep the values that still apply.
 

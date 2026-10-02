@@ -1,5 +1,7 @@
-"""The only way the app talks to an LLM: strict JSON schemas, retries, a fallback model and logging."""
+"""The only way the app talks to an LLM: Groq through LangChain, with Groq's Structured Outputs (a JSON schema),
+retries, a fallback model and logging. Code then grounds and validates every value the model returns."""
 
+import json
 import logging
 import math
 import re
@@ -7,9 +9,11 @@ import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Protocol, TypeVar
+
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel
+from langchain_groq import ChatGroq
+from pydantic import BaseModel, ValidationError
 
 from app.core.config import Settings
 
@@ -82,7 +86,9 @@ class LLMClient:
         raise LLMError(f"{schema.__name__} generation failed: {last_error}") from last_error
 
     def _generate(self, name: str, model: BaseChatModel, schema: type[T], prompt: str, messages: list) -> T:
-        runnable = model.with_structured_output(schema, method="function_calling")
+        # Groq's Structured Outputs: the reply is JSON for the schema, not a tool call, so the model cannot skip
+        # the call or misname the tool. Best-effort mode: our schema has optional fields, which strict mode forbids.
+        runnable = model.with_structured_output(schema, method="json_schema")
         last_error: Exception | None = None
         for attempt in range(1, self._max_attempts + 1):
             started = time.perf_counter()
@@ -97,16 +103,57 @@ class LLMClient:
                 if _rate_limited(exc):
                     # Retrying a quota error only burns more quota.
                     raise _RateLimited(_retry_after(exc)) from exc
+                recovered = _recover(exc, schema)
+                if recovered is not None:
+                    logger.warning("llm %s with %s: the provider rejected the reply (%s); it passed our own schema",
+                                   prompt, name, _reason(exc))
+                    return recovered
                 last_error = exc
-                logger.warning("llm %s attempt %d with %s failed: %s", prompt, attempt, name, exc)
+                logger.warning("llm %s attempt %d with %s failed: %s", prompt, attempt, name, _reason(exc))
         logger.error("llm %s failed with %s: %s", prompt, name, last_error)
         raise LLMError(f"{schema.__name__} generation failed: {last_error}") from last_error
+
+
+def build_llm(settings: Settings) -> LLMClient:
+    names = [settings.model, *([settings.fallback_model] if settings.fallback_model else [])]
+    return LLMClient([(name, ChatGroq(model=name, api_key=settings.api_key, temperature=settings.temperature,
+                                      reasoning_effort=settings.reasoning_effort))
+                      for name in names])
 
 
 class _RateLimited(Exception):
     def __init__(self, retry_after: float | None) -> None:
         super().__init__("rate limited")
         self.retry_after = retry_after
+
+
+def _error_body(exc: Exception) -> dict:
+    body = getattr(exc, "body", None)
+    body = body.get("error", body) if isinstance(body, dict) else None
+    return body if isinstance(body, dict) else {}
+
+
+def _recover(exc: Exception, schema: type[T]) -> T | None:
+    """Groq checks a tool call against the JSON schema strictly and rejects small slips (890 for "890").
+    Its error carries the model's reply ("failed_generation"); if that reply passes our own schema, use it.
+    Grounding and validation still decide every value, as for any reply."""
+    raw = _error_body(exc).get("failed_generation")
+    if not isinstance(raw, str):
+        return None
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict) and isinstance(data.get("arguments"), (dict, str)):  # {"name": …, "arguments": …}
+            data = data["arguments"]
+            data = json.loads(data) if isinstance(data, str) else data
+        return schema.model_validate(data)
+    except (ValueError, ValidationError):
+        return None
+
+
+def _reason(exc: Exception) -> str:
+    """The provider's own message without the echoed reply, which can be thousands of characters."""
+    message = _error_body(exc).get("message")
+    return str(message) if message else str(exc)[:500]
 
 
 def _rate_limited(exc: Exception) -> bool:
@@ -120,18 +167,3 @@ def _retry_after(exc: Exception) -> float | None:
         return None
     parts = {unit: value for value, unit in re.findall(r"([\d.]+)([hms])", match.group(1))}
     return float(parts.get("h", 0)) * 3600 + float(parts.get("m", 0)) * 60 + float(parts.get("s", 0)) or None
-
-
-def build_llm(settings: Settings) -> LLMClient:
-    names = [settings.model, *([settings.fallback_model] if settings.fallback_model else [])]
-    return LLMClient([(name, _chat_model(settings, name)) for name in names])
-
-
-def _chat_model(settings: Settings, name: str) -> BaseChatModel:
-    if settings.provider == "groq":
-        from langchain_groq import ChatGroq
-
-        return ChatGroq(model=name, api_key=settings.api_key, temperature=settings.temperature)
-    from langchain_openai import ChatOpenAI
-
-    return ChatOpenAI(model=name, api_key=settings.api_key, temperature=settings.temperature)

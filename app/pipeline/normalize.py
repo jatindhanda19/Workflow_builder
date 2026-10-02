@@ -28,6 +28,64 @@ TZ_ALIASES = {
     "jst": "Asia/Tokyo", "sgt": "Asia/Singapore", "gst": "Asia/Dubai", "dubai": "Asia/Dubai",
 }
 VAGUE_TIMEZONES = frozenset({"my timezone", "my time zone", "local", "local time", "my time", "our timezone", "here"})
+# A comparison value such as 10000, ₹1,00,000, 10 MB or 50% (never a field name).
+VALUE_LIKE = re.compile(
+    r"(?:[₹$€£]|rs\.?|inr|usd)?\s*-?\d[\d,]*(?:\.\d+)?\s*"
+    r"(?:%|k|kb|mb|gb|tb|lakhs?|lacs?|crores?|cr|thousand|million|rs|inr|usd|rupees|dollars|bytes)?",
+    re.IGNORECASE,
+)
+FIELD_PATH = re.compile(r"[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*")
+# Words of a condition's field label that do not name the data, e.g. "Invoice amount field".
+FIELD_LABEL_NOISE = frozenset({
+    "field", "fields", "name", "column", "property", "value", "data", "the", "which", "of", "to", "check", "compare",
+    "condition", "reference", "key",
+})
+# Canonical comparison operators and the words users write for them (matched exactly, not as substrings).
+OPERATORS: dict[str, tuple[str, ...]] = {
+    "greater_than_or_equal": (">=", "≥", "=>", "greater than or equal to", "greater than or equal", "at least",
+                              "more than or equal to", "no less than", "minimum", "gte"),
+    "less_than_or_equal": ("<=", "≤", "=<", "less than or equal to", "less than or equal", "at most",
+                           "no more than", "maximum", "up to", "lte"),
+    "greater_than": (">", "greater than", "more than", "above", "over", "exceeds", "higher than", "larger than",
+                     "bigger than", "gt"),
+    "less_than": ("<", "less than", "below", "under", "lower than", "smaller than", "fewer than", "lt"),
+    "not_equals": ("!=", "≠", "<>", "not equals", "not equal to", "not equal", "does not equal", "is not", "isn't", "ne"),
+    "equals": ("=", "==", "equals", "equal to", "equal", "is equal to", "is", "same as", "eq"),
+    "contains": ("contains", "includes", "has", "with"),
+    "not_contains": ("does not contain", "not contains", "doesn't contain", "excludes"),
+    # Checks with no value to compare with.
+    "is_empty": ("is empty", "empty", "is missing", "missing", "is blank", "blank", "is not provided", "not provided",
+                 "does not exist", "is null", "has no value"),
+    "is_not_empty": ("is not empty", "not empty", "is present", "present", "exists", "is provided", "provided",
+                     "is not missing", "is not blank", "has a value"),
+}
+ORDERING_OPERATORS = frozenset({"greater_than", "greater_than_or_equal", "less_than", "less_than_or_equal"})
+UNARY_OPERATORS = frozenset({"is_empty", "is_not_empty"})
+OPERATOR_SYMBOLS = {
+    "greater_than": ">", "greater_than_or_equal": ">=", "less_than": "<", "less_than_or_equal": "<=",
+    "equals": "=", "not_equals": "!=", "contains": "contains", "not_contains": "does not contain",
+    "is_empty": "is empty", "is_not_empty": "is not empty",
+}
+# Phrases that state a comparison inside a sentence; one-word ones that also mean other things are left out.
+_STATED_OPERATORS = sorted(
+    (w for c, words in OPERATORS.items() if c in ORDERING_OPERATORS or c.endswith("equals") for w in words
+     if w not in ("is", "equal", "eq", "ne", "gt", "lt", "gte", "lte", "minimum", "maximum", "up to")),
+    key=len, reverse=True)
+# "if the order total is above ₹50,000" → field "order total", operator "above", value "₹50,000";
+# "if the customer's email is missing" → field "customer's email", operator "missing", no value.
+_STATED_FIELD = (r"\b(?:if|when|whenever|where|whether)\s+(?:the\s+|its\s+|their\s+|an?\s+)?"
+                 r"(?P<field>[a-z][a-z0-9_.]*(?:['’]s)?(?:\s+[a-z][a-z0-9_.]*){0,3}?)\s+")
+STATED_CONDITION = re.compile(
+    _STATED_FIELD + r"(?:is\s+|are\s+|was\s+|gets\s+)?"
+    rf"(?P<operator>{'|'.join(re.escape(w) for w in _STATED_OPERATORS)})\s*"
+    r"(?P<value>(?:[₹$€£]|rs\.?\s*)?-?\d(?:[\d,]*\d)?(?:\.\d+)?(?:\s*(?:%|k|kb|mb|gb|tb|lakhs?|crores?)\b)?)",
+    re.IGNORECASE,
+)
+STATED_PRESENCE = re.compile(
+    _STATED_FIELD + r"(?P<operator>(?:is|are)\s+(?:not\s+)?(?:missing|empty|blank|provided|present)|"
+    r"(?:does|do)\s+not\s+exist|exists)\b",
+    re.IGNORECASE,
+)
 
 
 def normalize_text(text: str) -> str:
@@ -100,6 +158,56 @@ def parse_timezone(text: str) -> str | None:
 def parse_slack_channel(text: str) -> str | None:
     name = re.sub(r"\s+channel$", "", text.strip().lower()).lstrip("#").strip()
     return f"#{name}" if SLACK_CHANNEL.fullmatch(name) else None
+
+
+def looks_like_value(text: str) -> bool:
+    return bool(VALUE_LIKE.fullmatch(text.strip()))
+
+
+def parse_field(text: str, label: str = "") -> str | None:
+    """A data reference such as invoice.amount; "#amount" becomes "<entity>.amount" when the label names the entity."""
+    name = re.sub(r"^the\s+|\s+(?:field|column|property)$", "", text.strip().lstrip("#$@").strip().lower())
+    name = re.sub(r"[\s-]+", "_", name.strip())
+    if not FIELD_PATH.fullmatch(name):
+        return None
+    entity = field_subject(label)[:-1]
+    if not entity or "." in name:
+        return name
+    parts = name.split("_")
+    if parts[:len(entity)] == entity:  # "invoice amount" → invoice.amount
+        parts = parts[len(entity):] or parts
+    return f"{'_'.join(entity)}.{'_'.join(parts)}"
+
+
+def field_subject(label: str) -> list[str]:
+    """The words of a field label that name the data: "Invoice amount field" → ["invoice", "amount"]."""
+    return [w for w in re.findall(r"[a-z0-9]+", label.lower()) if w not in FIELD_LABEL_NOISE]
+
+
+def stated_conditions(text: str) -> list[tuple[str | None, str, str | None]]:
+    """Conditions written in the user's own words, as (field, operator, value) raw text, in the order written.
+    A field of several words becomes a reference: "order total" → order.total, "customer's email" → customer.email.
+    A presence check ("is missing") has no value."""
+    matches = sorted([*STATED_CONDITION.finditer(text), *STATED_PRESENCE.finditer(text)], key=lambda m: m.start())
+    found = []
+    for match in matches:
+        words = re.sub(r"['’]s\b", "", match.group("field").lower()).split()
+        if words[0] in ("it", "this", "that", "they", "one", "something", "anything"):
+            field = None  # "if it is above 500" does not say which data
+        else:
+            field = words[0] if len(words) == 1 else f"{words[0]}.{'_'.join(words[1:])}"
+        value = match.groupdict().get("value")
+        found.append((field, match.group("operator"), value.strip() if value else None))
+    return found
+
+
+def parse_operator(text: str) -> str | None:
+    lowered = WHITESPACE.sub(" ", text.lower().replace("_", " ")).strip()
+    for candidate in (lowered, re.sub(r"^(?:is|if|when)\s+", "", lowered)):
+        for canonical, words in OPERATORS.items():
+            if candidate == canonical.replace("_", " ") or candidate in words:
+                return canonical
+    return None
 
 
 def twelve_hour(hh_mm: str) -> str:

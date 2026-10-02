@@ -1,14 +1,19 @@
-A conversational workflow builder that works like n8n. The user describes **any**
-automation, with **any** app (Shopify, Stripe, GitHub, Jira, Notion, HubSpot, Slack,
-Gmail, Google Sheets, webhooks, schedules, …). The builder asks only what it still
-needs, always as **multiple-choice questions**, validates every answer in code, and
-produces a workflow JSON plus a flow diagram.
+# Conversational Workflow Builder
+
+Describe an automation in plain words ("when an invoice arrives, if the amount is above ₹1,00,000
+notify the manager, otherwise save it"). The builder asks only what it still needs, as
+**multiple-choice questions**, and produces a workflow JSON, a flow diagram, and, for a few step
+types, a real run.
+
+**The core idea: the LLM proposes, code decides.** One LLM call per turn proposes the whole workflow
+and the next question. Code then keeps a value only if the user's own words back it and it validates,
+never lets the model drift an earlier answer, checks the workflow's shape, and builds the output with
+no LLM. Every turn logs what the model proposed and what code kept, rejected or ignored, and why.
 
 - **Backend:** FastAPI + LangGraph (`app/`)
 - **Frontend:** Streamlit chat UI with clickable answer options (`frontend/`)
-- **LLM:** Groq or OpenAI via LangChain. One call per turn designs the workflow and
-  predicts the next question. Grounding, validation, readiness, generation and the
-  diagram are handled in code.
+- **LLM:** Groq (`openai/gpt-oss-120b`, with `openai/gpt-oss-20b` while it is rate limited) through LangChain;
+  every reply is validated against the `TurnPlan` schema
 
 ## How it works
 
@@ -19,13 +24,30 @@ needs, plus its prediction of the best next question. Code then decides what is 
 | Rule (enforced in code) | Example |
 | --- | --- |
 | An app is set only if the user named it, or their words imply a built-in node | "notify me" → *Which app should notify you?* (Slack / Gmail / Telegram …) |
-| A value is stored only if the user said it (its evidence is in their messages) and it validates | an invented spreadsheet name is discarded and asked instead |
+| A value is stored only if the user said it (its evidence is in their messages, as whole words) and it validates | an invented spreadsheet name is discarded and asked instead; "Git" is not taken from "github" |
 | A stored value changes only when the latest message changes it | the AI cannot drift an earlier answer |
 | Formats are checked per kind: email, time, timezone, URL, number, channel, choice | "evening" is not a time → asked again with 5:00 / 6:00 / 7:00 PM |
-| The workflow is ready only when every app and required parameter is known | |
+| A condition's field is a data reference, never a number; its comparison is read from the user's sentence | "10000" typed as the field → *10000 looks like a value, not a field name*; "above ₹50,000" is `greater_than 50000` |
+| The workflow is ready only when every app and required parameter is known and its shape is valid | "otherwise save it" with no step for the otherwise case → asked, not ended |
 | The generated JSON must pass schema, graph and grounding checks | one trigger first, every node reachable, no cycles |
 
-Data from earlier steps is referenced n8n-style, e.g. `{{shopify_trigger.customer_email}}`.
+Data from earlier steps is referenced as `{{step_id.field}}`, e.g. `{{shopify_trigger.customer_email}}`.
+
+## If / otherwise
+
+Each step follows the step before it, or the earlier steps it names in `after`. A step after a condition
+says which outcome it runs on (`branch: true / false`), so a workflow can branch, nest conditions and
+join again:
+
+```
+Gmail: New invoice → invoice.amount > 100000?
+                        ├─ yes → Telegram: Notify manager
+                        └─ no  → OneDrive: Save invoice
+```
+
+Two steps put on the same outcome ("if so, add it to Airtable and send it to Slack") run one after the
+other, in the order written. An outcome with no step ends the workflow; it may only be empty when the user did not say what to do
+"otherwise".
 
 ## Questions are multiple choice (MCQ)
 
@@ -43,74 +65,52 @@ Data from earlier steps is referenced n8n-style, e.g. `{{shopify_trigger.custome
 `POST /chat` returns `question: {target, text, options, allow_custom}`, the
 collected `fields`, and, once generated, the `workflow` JSON and a Mermaid `diagram`.
 
+`POST /sessions/{id}/run` with `{"input": {...}}` runs the generated workflow and returns each step's
+status (`ok`, `failed`, `skipped`), output and error. Secrets such as `SLACK_WEBHOOK_URL` come from the
+backend's environment, never from the chat.
+
 ## Project structure
 
 ```
 workflow-builder/
-├── app/                              # Backend package
-│   ├── main.py                       # FastAPI app and HTTP endpoints (entry point)
-│   │
-│   ├── core/                         # Shared infrastructure
-│   │   ├── config.py                 #   settings loaded from .env (provider, model, keys)
-│   │   └── llm/                      #   LLM client: strict JSON schemas, retries
-│   │       ├── client.py
-│   │       └── prompts/              #   prompt templates (.txt)
-│   │
-│   ├── pipeline/                     # One conversation turn, stage by stage
-│   │   ├── graph.py                  #   LangGraph wiring of the stages below
-│   │   ├── intent/                   #   1. what is the user's goal?
-│   │   │   ├── classifier.py         #      goal-first intent classification
-│   │   │   ├── rules.py              #      rule-based fast path
-│   │   │   ├── followup.py           #      post-generation: question / edit / new request
-│   │   │   └── schema.py
-│   │   ├── extraction/               #   2. pull field values out of the message
-│   │   │   ├── extract.py
-│   │   │   ├── normalize.py          #      email / text / yes-no normalisation
-│   │   │   └── schema.py
-│   │   ├── planning/                 #   3. which nodes and fields apply
-│   │   │   ├── plan.py
-│   │   │   └── facts.py
-│   │   ├── validation/               #   4. are the answers valid and complete?
-│   │   │   ├── fields.py             #      per-field validation
-│   │   │   ├── consistency.py        #      cross-field conflict detection
-│   │   │   └── readiness.py          #      decides when the workflow is complete
-│   │   ├── questions/                #   5. pick and phrase the next question
-│   │   │   ├── selector.py
-│   │   │   └── ack.py                #      acknowledgement messages
-│   │   ├── generation/               #   6. build the workflow JSON (no LLM)
-│   │   │   ├── builder.py
-│   │   │   ├── checks.py             #      output schema validation
-│   │   │   └── schema.py
-│   │   └── diagram/                  #   7. flow diagram from the workflow JSON
-│   │       ├── builder.py
-│   │       └── mermaid.py
-│   │
-│   ├── registry/                     # Domain data: node types and their fields
-│   │   ├── model.py                  #   NodeType / FieldDef definitions
-│   │   ├── nodes.py                  #   all node types (add new ones here)
-│   │   └── display.py                #   human-readable values and summaries
-│   │
-│   └── state/                        # Session state across turns
-│       ├── models.py                 #   WorkflowState and related models
-│       ├── machine.py                #   modes: collecting → ready → post_generation
-│       ├── updater.py                #   merges each turn's extraction into state
-│       └── store.py                  #   in-memory session store
-│
-├── frontend/
-│   └── streamlit_app.py              # Chat UI; talks to the backend over HTTP
-│
-├── docs/
-│   └── DECISIONS.md                  # Design decisions and how to extend
-│
-├── tests/                            # pytest suite
-│   ├── conftest.py
-│   ├── test_units.py
-│   ├── test_conversations.py
-│   ├── test_generalization.py
-│   └── test_demo_regressions.py      # replays of real demo failures
-│
+├── app/
+│   ├── main.py                       # FastAPI app: /chat, /sessions/{id}, /sessions/{id}/run, /health
+│   ├── core/
+│   │   ├── config.py                 # settings from .env: Groq key, model, fallback model
+│   │   ├── turnlog.py                # one JSON log line per turn: proposed / kept / rejected / ignored
+│   │   └── llm/
+│   │       ├── client.py             # Groq via LangChain: retries, rate-limit fallback model
+│   │       └── prompts/planner.txt   # the one prompt: plan the workflow + next question
+│   ├── pipeline/                     # one conversation turn
+│   │   ├── graph.py                  # LangGraph wiring: ingest → plan → merge → check → ask / generate
+│   │   ├── planner.py                # the only LLM call per turn
+│   │   ├── planner_schema.py         # what the LLM must return (TurnPlan)
+│   │   ├── merge.py                  # code decides: keep only grounded, valid values
+│   │   ├── normalize.py              # parsing: times, timezones, channels, fields, operators
+│   │   ├── validation.py             # per-kind validation, readiness, condition checks
+│   │   ├── questions.py              # the next multiple-choice question
+│   │   ├── generation/
+│   │   │   ├── builder.py            # workflow JSON from state (no LLM)
+│   │   │   ├── checks.py             # schema, graph and grounding checks on the output
+│   │   │   └── schema.py             # Workflow / node / edge models + JSON schema
+│   │   └── diagram/mermaid.py        # Mermaid flowchart from the workflow JSON
+│   ├── runtime/executor.py           # runs a workflow: Manual/Webhook, If, HTTP Request, Slack
+│   └── state/
+│       ├── models.py                 # WorkflowState, Step, Param
+│       ├── machine.py                # modes: collecting → ready → post_generation
+│       └── store.py                  # sessions in SQLite (one row per session)
+├── frontend/streamlit_app.py         # chat UI; talks to the backend over HTTP
+├── tests/                            # pytest suite; the LLM is scripted, no API key needed
+│   ├── test_clarification.py         # ambiguity, edits, new requests, rate limits
+│   ├── test_conditions.py            # if / otherwise branches, field vs value
+│   ├── test_grounding.py             # whole-word grounding
+│   ├── test_llm_client.py            # the Groq client, with the model faked
+│   ├── test_runtime.py               # the executor, with HTTP faked
+│   ├── test_store.py                 # sessions survive a restart
+│   └── test_turnlog.py               # the per-turn log line
 ├── requirements.txt
-├── .env.example                      # Copy to .env and fill in keys
+├── pytest.ini
+├── .env.example                      # copy to .env and fill in your key
 └── README.md
 ```
 
@@ -125,8 +125,20 @@ user message (or picked option)
         └─ yes → generate  → workflow JSON → diagram
 ```
 
-See the docstring at the top of [app/pipeline/graph.py](app/pipeline/graph.py) for the full graph, and
-[docs/DECISIONS.md](docs/DECISIONS.md) for why it is built this way.
+See the docstring at the top of [app/pipeline/graph.py](app/pipeline/graph.py) for the full graph.
+
+## Logs
+
+Every `/chat` turn writes one JSON line to stderr: what the model proposed, what code kept, rejected or
+ignored and why, the question asked next, and the turn's latency. See
+[app/core/turnlog.py](app/core/turnlog.py) for an example line.
+
+```
+{"event": "turn", "turn": 1, "message_kind": "build", "proposed": [...],
+ "kept": [{"field": "post.channel", "value": "#dev"}],
+ "rejected": [{"field": "post.time", "reason": "\"evening\" is not an exact time ..."}],
+ "ignored": [{"field": "issue_trigger.app", "reason": "\"Git\" was not named by the user"}], ...}
+```
 
 ## Running locally
 
@@ -135,7 +147,7 @@ python -m venv .venv
 .venv\Scripts\activate            # Windows  (macOS/Linux: source .venv/bin/activate)
 pip install -r requirements.txt
 
-copy .env.example .env            # then fill in your API key
+copy .env.example .env            # then set GROQ_API_KEY
 
 # Terminal 1: backend
 uvicorn app.main:app --port 8001 --reload
@@ -151,3 +163,23 @@ The frontend reads `API_URL` from the environment (default `http://127.0.0.1:800
 ```bash
 pytest
 ```
+
+The LLM's replies are scripted in the tests, so no API key or network is needed.
+
+## Limits
+
+- **It runs only four step types.** The Run button executes Manual or Webhook triggers, If, HTTP
+  Request and Slack incoming-webhook messages; a workflow with any other step is designed but not run.
+  The output is not an importable n8n file, and app/operation names are whatever the planner chose.
+- **A run is one request, started from the UI.** The trigger's data is JSON typed into the UI; there is
+  no public webhook URL, schedule or retry.
+- **No app catalogue.** Any app name the user gives is accepted; nothing checks that the app or
+  operation exists or that a parameter is the one that app really needs.
+- **Grounding is word matching.** A value is kept if its words appear in what the user wrote, so it
+  catches invented values but not every misreading of the user's words.
+- **One condition shape.** Conditions compare one field with one value; there is no AND/OR and
+  no loops.
+- **Sessions are one SQLite file** (`SESSION_DB`, default `sessions.db`); no authentication, and no
+  expiry of old sessions.
+- **The planner can still be wrong.** It decides which steps exist and which question comes next;
+  code rejects unbacked values but cannot fix a missing or extra step.
