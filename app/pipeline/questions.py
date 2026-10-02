@@ -58,15 +58,11 @@ def next_question(state: WorkflowState, predicted: NextQuestion | None) -> tuple
     item, use_ai = _resolve(state, current, predicted)
     text = _clean(predicted.question) if use_ai and predicted else ""
     text = text or _fallback_text(item)
-    note = item.param.note if item.param else None
-    if note:
-        text = f"{note.rstrip('.')}. {text}"
-    elif state.asked_count(item.key) >= 1:
-        text = f"{STILL_NEED} {text}"
+    note = (item.param.note if item.param else None) or (STILL_NEED if state.asked_count(item.key) >= 1 else None)
     options = _options(item, predicted.options if use_ai and predicted else [], state.user_text().lower())
     choice_only = item.param is not None and item.param.kind == "choice" and bool(item.param.choices)
-    return item.key, Question(target=item.key, step=_step_context(state, item), text=text, options=options,
-                              allow_custom=not choice_only)
+    return item.key, Question(target=item.key, step=_step_context(state, item), text=text, note=note,
+                              options=options, allow_custom=not choice_only)
 
 
 def _resolve(state: WorkflowState, current: list[OpenItem], predicted: NextQuestion | None) -> tuple[OpenItem, bool]:
@@ -115,7 +111,8 @@ def match_option(question: Question | None, message: str) -> str | None:
 
 def render(question: Question) -> str:
     """The question as chat text. The UI shows the options as buttons, so they are not repeated here."""
-    return f"_{question.step}_\n\n{question.text}" if question.step else question.text
+    text = f"{question.note.rstrip('.')}. {question.text}" if question.note else question.text
+    return f"_{question.step}_\n\n{text}" if question.step else text
 
 
 def _options(item: OpenItem, suggested: list[str], user_text: str) -> list[QuestionOption]:
@@ -133,7 +130,8 @@ def _options(item: OpenItem, suggested: list[str], user_text: str) -> list[Quest
         # Every choice is listed: a choice parameter accepts nothing else.
         ranked = [c for s in suggested for c in param.choices if plain(c) == plain(s)]
         return _dedupe([*ranked, *param.choices], limit=None)
-    labels = _valid_labels(param, suggested)
+    # What the rejected answer may have meant ("evening": 5, 6 or 7 PM) comes first.
+    labels = _valid_labels(param, [*param.guesses, *suggested])
     if len(labels) < 2:
         labels += _valid_labels(param, list(DEFAULT_OPTIONS.get(param.kind, ())))
     return _dedupe(labels)

@@ -158,6 +158,7 @@ class _Merger:
             kept = validate(param, old.value) if old.value is not None else None
             param.value = kept.value if kept and kept.ok else None
             param.note = None if param.value is not None else old.note
+            param.guesses = [] if param.value is not None else list(old.guesses)
         proposed = (planned.value or "").strip()
         if not proposed or (param.value is not None and _same(param.value, proposed)):
             return param  # nothing new: the LLM repeated the stored value
@@ -189,10 +190,10 @@ class _Merger:
 
     def _set(self, key: str, param: Param, verdict, overwritten: bool) -> None:
         if verdict.ok:
-            param.value, param.note = verdict.value, None
+            param.value, param.note, param.guesses = verdict.value, None, []
             self.changed(key, param.label, display(param, verdict.value), overwritten)
         else:
-            param.note = verdict.reason
+            param.note, param.guesses = verdict.reason, list(verdict.guesses)
             self.log(key, "rejected", verdict.reason or "")
 
     # -- picked option ------------------------------------------------------------------------------

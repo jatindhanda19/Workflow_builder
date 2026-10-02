@@ -100,7 +100,7 @@ def test_c_number_typed_as_field_asks_for_clarification(plan):
     state = _run(state, "10000", plan)
     assert _condition(state) == {"field": None, "operator": "greater_than", "value": "100000"}
     assert state.workflow is None and state.target == "check_amount.field"
-    assert FIELD_REASON in state.question.text
+    assert FIELD_REASON in state.question.note and FIELD_REASON in state.messages[-1].content
     assert not any("10000" == str(p.value) for s in state.steps for p in s.params)
 
 

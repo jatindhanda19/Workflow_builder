@@ -153,7 +153,7 @@ def test_workflow_is_kept_across_turns_and_the_old_version_saved():
     # Turn 2: the answer completes the edit; the workflow is regenerated and the old version kept.
     state = _run(state, "Sent by the support team", _with_footer("Sent by the support team"))
     assert state.workflow.nodes[2].parameters["footer"] == "Sent by the support team"
-    assert state.previous_workflows == [first]
+    assert state.previous_workflows == [first] and state.previous_reasons == ["edited"]
     assert state.messages[-1].content.startswith("Updated")
 
 

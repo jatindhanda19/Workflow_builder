@@ -12,10 +12,33 @@ LogEvent = Literal["asked", "filled", "overwritten", "rejected", "ignored", "cle
 APP = "app"  # pseudo-parameter: the app of a step that is not decided yet
 
 
+PreviousReason = Literal["edited", "new_workflow"]
+
+
+class PlanRow(BaseModel):
+    role: Literal["When", "If", "Then"]
+    label: str  # "Gmail: Send email", "New rows found", "Send message (app to choose)"
+    branch: Literal["yes", "no"] | None = None  # the condition outcome this step runs on
+
+
+class ReplyParts(BaseModel):
+    """An assistant reply in pieces, for a UI that lays them out itself. `Message.content` is the same reply
+    as one Markdown string."""
+
+    saved: str | None = None  # what this turn stored, e.g. "Time: 6:00 PM"
+    lead: str | None = None  # text above the plan or question
+    plan: list[PlanRow] = Field(default_factory=list)
+    context: str | None = None  # "Step 1 of 4 · Trigger: Schedule: Every weekday"
+    note: str | None = None  # why the last answer was rejected
+    text: str = ""  # the question, or the main sentence
+    more: str | None = None  # secondary text under `text`
+
+
 class Message(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     options: list[str] = Field(default_factory=list)  # the MCQ options shown with this message
+    parts: ReplyParts | None = None  # assistant messages only
 
 
 class QuestionOption(BaseModel):
@@ -28,6 +51,7 @@ class Question(BaseModel):
     target: str | None = None
     step: str | None = None  # which step of the automation the question is about
     text: str
+    note: str | None = None  # why the last answer was rejected, or that this was asked before
     options: list[QuestionOption] = Field(default_factory=list)
     allow_custom: bool = True
 
@@ -41,6 +65,7 @@ class Param(BaseModel):
     required: bool = True
     value: FieldValue | None = None
     note: str | None = None  # why the last answer was rejected
+    guesses: list[str] = Field(default_factory=list)  # what the rejected answer may have meant ("6:00 PM")
 
 
 class Step(BaseModel):
@@ -94,6 +119,9 @@ class WorkflowState(BaseModel):
     pending_new_request: str | None = None
     workflow: Workflow | None = None
     previous_workflows: list[Workflow] = Field(default_factory=list)  # generated earlier in this session, oldest first
+    # Why each previous workflow was kept, same order: an older version of an edited one, or one replaced by a new
+    # request. A separate list, so sessions saved before it existed still load.
+    previous_reasons: list[PreviousReason] = Field(default_factory=list)
 
     # Scratch values for the current turn, reset on every message.
     plan: TurnPlan | None = None
@@ -101,6 +129,8 @@ class WorkflowState(BaseModel):
     llm_failed: bool = False
     changes: list[str] = Field(default_factory=list)
     reply: str | None = None
+    reply_parts: ReplyParts | None = None  # the same reply in pieces; None: just `reply` as text
+    reply_plan: list[PlanRow] | None = None  # set when `reply` is the plan text
     reply_route: str | None = None
 
     def step(self, step_id: str) -> Step | None:

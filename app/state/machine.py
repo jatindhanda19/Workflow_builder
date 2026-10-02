@@ -1,16 +1,7 @@
-"""Session modes and the transitions between them.
-
-    COLLECTING ──(every app and required parameter known)──> READY
-    READY ──(next user message)──> POST_GENERATION
-    POST_GENERATION ──question──> POST_GENERATION (answered from the draft)
-    POST_GENERATION ──edit──> values changed ──> COLLECTING or READY (regenerated)
-    POST_GENERATION ──new request──> confirm ──yes──> fresh COLLECTING state
-"""
-
 import re
 from typing import Literal
 
-from app.state.models import Mode, WorkflowState
+from app.state.models import Mode, PreviousReason, WorkflowState
 
 Answer = Literal["yes", "no", "unclear"]
 YES = ("yes", "y", "yeah", "yep", "sure", "please do", "ok", "okay", "correct", "right")
@@ -22,6 +13,8 @@ TURN_SCRATCH = {
     "llm_failed": False,
     "changes": [],
     "reply": None,
+    "reply_parts": None,
+    "reply_plan": None,
 }
 
 
@@ -44,10 +37,25 @@ def yes_no(message: str) -> Answer:
 
 def start_fresh(state: WorkflowState, request: str) -> WorkflowState:
     """A clean state for a new automation. The chat transcript and every generated workflow are carried over."""
-    previous = [*state.previous_workflows, *([state.workflow] if state.workflow else [])]
-    return WorkflowState(
-        messages=list(state.messages), turn=state.turn, latest_user_message=request, previous_workflows=previous,
-    )
+    fresh = new_workflow(state)
+    fresh.messages, fresh.latest_user_message = list(state.messages), request
+    return fresh
+
+
+def new_workflow(state: WorkflowState) -> WorkflowState:
+    """An empty draft and an empty chat; a generated workflow is kept under previous workflows."""
+    previous, reasons = list(state.previous_workflows), previous_reasons(state)
+    if state.workflow:
+        previous, reasons = [*previous, state.workflow], [*reasons, "new_workflow"]
+    return WorkflowState(turn=state.turn, previous_workflows=previous, previous_reasons=reasons)
+
+
+def previous_reasons(state: WorkflowState) -> list[PreviousReason]:
+    """One reason per previous workflow. Sessions saved before reasons were recorded lack them for their oldest
+    entries; those count as earlier workflows."""
+    count = len(state.previous_workflows)
+    known = state.previous_reasons[-count:] if count else []
+    return ["new_workflow"] * (count - len(known)) + list(known)
 
 
 def as_update(state: WorkflowState) -> dict:

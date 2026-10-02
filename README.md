@@ -62,8 +62,33 @@ other, in the order written. An outcome with no step ends the workflow; it may o
   typing the option. You can also type your own answer, except on fixed-choice
   questions.
 
-`POST /chat` returns `question: {target, text, options, allow_custom}`, the
-collected `fields`, and, once generated, the `workflow` JSON and a Mermaid `diagram`.
+## API
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /chat` `{session_id?, message}` | One conversation turn (the only call that uses the LLM) |
+| `GET /sessions/{id}` | The session, with its full `messages` history |
+| `POST /sessions/{id}/new` | Starts a new workflow, no LLM: a generated one moves to `previous_workflows`; the draft and chat are cleared |
+| `POST /sessions/{id}/run` | Runs the generated workflow (below) |
+| `DELETE /sessions/{id}` | Deletes the session |
+
+`POST /chat` (and `GET /sessions/{id}`) returns:
+
+- `reply`: the bot message as one Markdown string (what the Streamlit UI shows), and `parts`, the same
+  message in pieces for a custom UI: `saved` (what this turn stored, e.g. `Time: 6:00 PM`), `lead`, `plan`
+  (rows of `{role: When | If | Then, label, branch: yes | no | null}`), `context` (`Step 1 of 4 · …`),
+  `note` (why the last answer was rejected), `text` (the question or main sentence) and `more`. Every
+  assistant message in `messages` carries its `parts` too.
+- `question`: `{target, text, options, allow_custom, step, note}`. `note` is kept out of `text`; when an
+  answer was rejected, what it may have meant comes first in `options` ("evening" → 5:00 / 6:00 / 7:00 PM).
+- `name` and `steps`: the draft as `{id, kind, app, operation, title, params}`, each param
+  `{key, name, label, kind, value, display, status: filled | missing | ambiguous, note, required, choices}`.
+  `display` is the value as shown to people (`18:00` → `6:00 PM`); `fields` rows have it too.
+- `workflow` JSON and a Mermaid `diagram` once generated, and `previous_workflows` (oldest first), each with
+  `reason`: `edited` (an older version of the current workflow) or `new_workflow` (replaced by a new one).
+
+Browsers may call the API from the origins in `CORS_ORIGINS` (comma-separated; default
+`http://localhost:5173,http://127.0.0.1:5173`).
 
 `POST /sessions/{id}/run` with `{"input": {...}}` runs the generated workflow and returns each step's
 status (`ok`, `failed`, `skipped`), output and error. Secrets such as `SLACK_WEBHOOK_URL` come from the
@@ -74,7 +99,7 @@ backend's environment, never from the chat.
 ```
 workflow-builder/
 ├── app/
-│   ├── main.py                       # FastAPI app: /chat, /sessions/{id}, /sessions/{id}/run, /health
+│   ├── main.py                       # FastAPI app: the endpoints above, CORS
 │   ├── core/
 │   │   ├── config.py                 # settings from .env: Groq key, model, fallback model
 │   │   ├── turnlog.py                # one JSON log line per turn: proposed / kept / rejected / ignored
@@ -101,6 +126,7 @@ workflow-builder/
 │       └── store.py                  # sessions in SQLite (one row per session)
 ├── frontend/streamlit_app.py         # chat UI; talks to the backend over HTTP
 ├── tests/                            # pytest suite; the LLM is scripted, no API key needed
+│   ├── test_api.py                   # the HTTP API: steps, reply parts, new workflow, CORS
 │   ├── test_clarification.py         # ambiguity, edits, new requests, rate limits
 │   ├── test_conditions.py            # if / otherwise branches, field vs value
 │   ├── test_grounding.py             # whole-word grounding

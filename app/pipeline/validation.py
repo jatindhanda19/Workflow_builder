@@ -44,6 +44,7 @@ class Verdict:
     ok: bool
     value: FieldValue | None = None
     reason: str | None = None
+    guesses: tuple[str, ...] = ()  # what a rejected answer may have meant, e.g. ("5:00 PM", "6:00 PM")
 
 
 @dataclass(frozen=True)
@@ -257,7 +258,7 @@ def _time(param: Param, text: str) -> Verdict:
     if value:
         return Verdict(True, value)
     hint = f" (for example {' or '.join(guesses)})" if guesses else " (for example 6:00 PM)"
-    return Verdict(False, reason=f'"{text}" is not an exact time{hint}')
+    return Verdict(False, reason=f'"{text}" is not an exact time{hint}', guesses=tuple(guesses))
 
 
 def _timezone(param: Param, text: str) -> Verdict:

@@ -29,8 +29,8 @@ from app.pipeline.questions import (
     render,
 )
 from app.pipeline.validation import display, is_ready, links, structure_errors
-from app.state.machine import TURN_SCRATCH, as_update, mode_for_new_message, start_fresh, yes_no
-from app.state.models import LogEntry, Message, Question, WorkflowState
+from app.state.machine import TURN_SCRATCH, as_update, mode_for_new_message, previous_reasons, start_fresh, yes_no
+from app.state.models import LogEntry, Message, PlanRow, Question, ReplyParts, WorkflowState
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ NEW_REQUEST_CONFIRM = ("That sounds like a new automation. Should I start a new 
                        "The current one{name} will be {fate}.")
 KEEP_CURRENT = "Okay, I'll keep the current workflow."
 NOTHING_CHANGED = "I couldn't tell what to change. Which step or setting should I update, and to what?"
+NEXT_STEPS = "Tell me anything you want to change, or describe a new automation."
 
 
 def _route(state: WorkflowState) -> str:
@@ -105,7 +106,10 @@ def build_graph(llm: StructuredLLM):
         answer = (result.answer or "").strip() if result and kind == "question" else ""
         if kind in ("question", "other") and state.mode == "post_generation" and not state.picked:
             # After generation a question never edits the workflow.
-            return {"reply": answer or workflow_summary(state), "reply_route": "respond"}
+            if answer:
+                return {"reply": answer, "reply_route": "respond"}
+            return {"reply": workflow_summary(state), "reply_parts": workflow_summary_parts(state),
+                    "reply_route": "respond"}
         # While collecting, the plan is always merged: merge keeps only what the user really said.
         merged = merge_turn(state, result)
         handled = merged.changes or any(e.turn == merged.turn and e.field == state.target and e.event == "rejected"
@@ -119,7 +123,7 @@ def build_graph(llm: StructuredLLM):
         elif answer:
             update["reply"] = answer
         elif _structure(merged) != _structure(state) and not all(is_placeholder(s) for s in merged.steps):
-            update["reply"] = _plan_text(merged)
+            update["reply"], update["reply_plan"] = _plan_text(merged), _plan_rows(merged)
         update["reply_route"] = "check"
         return update
 
@@ -128,8 +132,10 @@ def build_graph(llm: StructuredLLM):
             return {"reply_route": "ask"}
         if not matches_draft(state.workflow, state):
             return {"reply_route": "generate"}
-        reply = NOTHING_CHANGED if state.mode == "post_generation" else workflow_summary(state)
-        return {"mode": "ready", "reply": state.reply or reply, "reply_route": "respond"}
+        if state.reply or state.mode == "post_generation":
+            return {"mode": "ready", "reply": state.reply or NOTHING_CHANGED, "reply_route": "respond"}
+        return {"mode": "ready", "reply": workflow_summary(state), "reply_parts": workflow_summary_parts(state),
+                "reply_route": "respond"}
 
     def ask(state: WorkflowState) -> dict[str, Any]:
         predicted = next_question(state, state.plan.next_question if state.plan else None)
@@ -144,8 +150,10 @@ def build_graph(llm: StructuredLLM):
         lead = " ".join(part for part in (ack, state.reply) if part)
         text = "\n\n".join(part for part in (lead, render(question)) if part)
         log = [*state.log, LogEntry(turn=state.turn, field=target, event="asked")]
+        parts = ReplyParts(saved=_saved(state), lead="Here's the plan:" if state.reply_plan else state.reply,
+                           plan=state.reply_plan or [], context=question.step, note=question.note, text=question.text)
         return {"mode": "collecting", "target": target, "question": question, "log": log,
-                "reply": text, "reply_route": "respond"}
+                "reply": text, "reply_parts": parts, "reply_route": "respond"}
 
     def generate(state: WorkflowState) -> dict[str, Any]:
         try:
@@ -160,12 +168,16 @@ def build_graph(llm: StructuredLLM):
         reply = (f"{prefix}{READY_REPLY}\n\nYour workflow \"{workflow.name}\" is ready: {chain}. "
                  "The diagram and JSON are below. Ask me anything about it, tell me what to change, "
                  "or describe a new automation.")
-        return {"workflow": workflow, "previous_workflows": previous, "mode": "ready", "target": None, "reply": reply,
-                "reply_route": "respond"}
+        parts = ReplyParts(saved=_saved(state), text=f'Your workflow "{workflow.name}" is ready.',
+                           more=f"{chain}. Ask me anything about it, tell me what to change, or describe a new automation.")
+        reasons = [*previous_reasons(state), "edited"] if state.workflow else previous_reasons(state)
+        return {"workflow": workflow, "previous_workflows": previous, "previous_reasons": reasons, "mode": "ready",
+                "target": None, "reply": reply, "reply_parts": parts, "reply_route": "respond"}
 
     def respond(state: WorkflowState) -> dict[str, Any]:
         options = [o.label for o in state.question.options] if state.question else []
-        message = Message(role="assistant", content=state.reply or "", options=options)
+        parts = state.reply_parts or ReplyParts(text=state.reply or "")  # any other reply is plain text
+        message = Message(role="assistant", content=state.reply or "", options=options, parts=parts)
         return {"messages": [*state.messages, message], "reply_route": None}
 
     graph = StateGraph(WorkflowState)
@@ -191,7 +203,34 @@ def workflow_summary(state: WorkflowState) -> str:
         values = ", ".join(f"{p.label}: {display(p, p.value)}" for p in step.params if p.value is not None)
         lines.append(f"- **{_step_label(step)}**" + (f" ({values})" if values else ""))
     head = f'Your workflow "{state.workflow.name}" runs: {state.workflow.metadata.description}.' if state.workflow else "Here is what I have so far:"
-    return "\n\n".join([head, "\n".join(lines), "Tell me anything you want to change, or describe a new automation."])
+    return "\n\n".join([head, "\n".join(lines), NEXT_STEPS])
+
+
+def workflow_summary_parts(state: WorkflowState) -> ReplyParts:
+    lead = f'Your workflow "{state.workflow.name}" runs like this:' if state.workflow else "Here is what I have so far:"
+    return ReplyParts(lead=lead, plan=_plan_rows(state, with_values=True), text=NEXT_STEPS)
+
+
+def _plan_rows(state: WorkflowState, with_values: bool = False) -> list[PlanRow]:
+    """The plan as rows for the UI: role, label and the condition outcome the step runs on."""
+    roles = {"trigger": "When", "condition": "If", "action": "Then"}
+    parents = links(state.steps)
+    rows = []
+    for step in state.steps:
+        branch = next((b for _, b in parents.get(step.id, []) if b), None)
+        if step.kind == "condition":  # "New rows found", not "If: New rows found"
+            label = step.operation if step.operation.lower() not in ("if", "condition") else step.title
+        else:
+            label = step.title if step.app else f"{step.operation} (app to choose)"
+        values = ", ".join(f"{p.label}: {display(p, p.value)}" for p in step.params if p.value is not None)
+        if with_values and values:
+            label += f" ({values})"
+        rows.append(PlanRow(role=roles[step.kind], label=label, branch={"true": "yes", "false": "no"}.get(branch)))
+    return rows
+
+
+def _saved(state: WorkflowState) -> str | None:
+    return "; ".join(state.changes) or None
 
 
 def _structure(state: WorkflowState) -> list[tuple[str, str | None]]:
