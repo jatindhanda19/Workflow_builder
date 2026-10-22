@@ -1,0 +1,748 @@
+import React from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  apiRequest,
+  clearAuth,
+  getSavedMessages,
+  getSavedUser,
+  saveAuth,
+  saveMessages,
+} from "./api.js";
+
+function Icon({ name, size = 18 }) {
+  const common = {
+    width: size,
+    height: size,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.7,
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    "aria-hidden": true,
+  };
+
+  const paths = {
+    logo: <><rect x="3" y="3" width="7" height="7" rx="2" /><rect x="14" y="3" width="7" height="7" rx="2" /><rect x="3" y="14" width="7" height="7" rx="2" /><path d="M17.5 14v7M14 17.5h7" /></>,
+    send: <><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></>,
+    plus: <><path d="M12 5v14M5 12h14" /></>,
+    logout: <><path d="M10 17l5-5-5-5" /><path d="M15 12H3" /><path d="M12 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-7" /></>,
+    workflow: <><rect x="3" y="3" width="7" height="6" rx="1.5" /><rect x="14" y="15" width="7" height="6" rx="1.5" /><path d="M6.5 9v4a2 2 0 0 0 2 2H17v0" /><path d="M14 18h-4" /></>,
+    shield: <><path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z" /><path d="m9 12 2 2 4-4" /></>,
+    activity: <><path d="M3 12h4l3-9 4 18 3-9h4" /></>,
+    chevron: <path d="m9 18 6-6-6-6" />,
+    file: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" /><path d="M14 2v6h6M8 13h8M8 17h8" /></>,
+    check: <path d="m5 12 4 4L19 6" />,
+    play: <path d="m7 4 14 8-14 8Z" />,
+    copy: <><rect x="8" y="8" width="13" height="13" rx="2" /><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" /></>,
+  };
+
+  return <svg {...common}>{paths[name] || paths.workflow}</svg>;
+}
+
+function AuthScreen({ onAuthenticated }) {
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  async function submit(event) {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+
+    const normalizedEmail = email.trim();
+
+    if (!normalizedEmail || !password) {
+      setError("Enter your email and password.");
+      return;
+    }
+
+    if (mode === "register") {
+      if (password.length < 12 || password.length > 128) {
+        setError("Password must be between 12 and 128 characters.");
+        return;
+      }
+
+      if (password !== confirmPassword) {
+        setError("The passwords do not match.");
+        return;
+      }
+    }
+
+    setBusy(true);
+
+    try {
+      if (mode === "register") {
+        await apiRequest("/auth/register", {
+          method: "POST",
+          body: JSON.stringify({
+            email: normalizedEmail,
+            password,
+          }),
+        });
+
+        setNotice("Account created. You can now sign in.");
+        setMode("login");
+        setPassword("");
+        setConfirmPassword("");
+      } else {
+        const data = await apiRequest("/auth/login", {
+          method: "POST",
+          body: JSON.stringify({
+            email: normalizedEmail,
+            password,
+          }),
+        });
+
+        saveAuth(data.access_token, data.user);
+        onAuthenticated(data.user);
+      }
+    } catch (err) {
+      setError(err.message || "Something went wrong.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="auth-layout">
+      <section className="auth-story">
+        <div className="brand">
+          <div className="brand-mark"><Icon name="logo" size={23} /></div>
+          <span>workflow<span className="brand-light">.builder</span></span>
+        </div>
+
+        <div className="story-content">
+          <div className="eyebrow"><span className="status-dot" /> INTELLIGENT AUTOMATION</div>
+          <h1>Turn ideas into<br /><span>working flows.</span></h1>
+          <p>
+            Describe what you want to accomplish. Build structured AI-powered
+            workflows, inspect each step, and execute them from one workspace.
+          </p>
+
+          <div className="story-points">
+            <div><span className="point-icon"><Icon name="workflow" /></span><span><b>Natural-language planning</b><small>Describe a task in your own words</small></span></div>
+            <div><span className="point-icon"><Icon name="shield" /></span><span><b>Security-aware by design</b><small>Authenticated, owner-scoped sessions</small></span></div>
+            <div><span className="point-icon"><Icon name="activity" /></span><span><b>Inspectable workflows</b><small>Review steps before execution</small></span></div>
+          </div>
+        </div>
+
+        <div className="story-footer">WORKFLOW BUILDER <span>·</span> AI AUTOMATION WORKSPACE</div>
+      </section>
+
+      <section className="auth-panel">
+        <div className="auth-card">
+          <div className="mobile-brand brand">
+            <div className="brand-mark"><Icon name="logo" size={23} /></div>
+            <span>workflow<span className="brand-light">.builder</span></span>
+          </div>
+
+          <div className="auth-heading">
+            <div className="mini-label">{mode === "login" ? "WELCOME BACK" : "GET STARTED"}</div>
+            <h2>{mode === "login" ? "Sign in to your workspace" : "Create your workspace account"}</h2>
+            <p>{mode === "login" ? "Enter your details to continue building." : "Create an account to start building workflows."}</p>
+          </div>
+
+          <form onSubmit={submit} className="auth-form">
+            <label htmlFor="email">Email address</label>
+            <input
+              id="email"
+              type="email"
+              autoComplete="email"
+              placeholder="you@example.com"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              required
+            />
+
+            <label htmlFor="password">Password</label>
+            <input
+              id="password"
+              type="password"
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
+              placeholder={mode === "register" ? "At least 12 characters" : "Enter your password"}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              minLength={mode === "register" ? 12 : undefined}
+              maxLength={128}
+              required
+            />
+
+            {mode === "register" && (
+              <>
+                <label htmlFor="confirm-password">Confirm password</label>
+                <input
+                  id="confirm-password"
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder="Enter your password again"
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  maxLength={128}
+                  required
+                />
+                <p className="form-hint">Use 12–128 characters. Choose a unique password.</p>
+              </>
+            )}
+
+            {error && <div className="notice error-notice" role="alert">{error}</div>}
+            {notice && <div className="notice success-notice" role="status">{notice}</div>}
+
+            <button className="primary-button auth-submit" type="submit" disabled={busy}>
+              {busy ? <span className="spinner" /> : null}
+              {busy ? "Please wait..." : mode === "login" ? "Sign in" : "Create account"}
+              {!busy && <Icon name="chevron" size={17} />}
+            </button>
+          </form>
+
+          <div className="auth-switch">
+            {mode === "login" ? "New to Workflow Builder?" : "Already have an account?"}
+            {" "}
+            <button
+              type="button"
+              onClick={() => {
+                setMode(mode === "login" ? "register" : "login");
+                setError("");
+                setNotice("");
+              }}
+            >
+              {mode === "login" ? "Create account" : "Sign in"}
+            </button>
+          </div>
+
+          <div className="auth-security"><Icon name="shield" size={15} /> Your workspace is protected by authentication.</div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function Sidebar({ user, sessionId, onNew, onLogout }) {
+  return (
+    <aside className="sidebar">
+      <div className="brand sidebar-brand">
+        <div className="brand-mark"><Icon name="logo" size={23} /></div>
+        <span>workflow<span className="brand-light">.builder</span></span>
+      </div>
+
+      <div className="sidebar-label">WORKSPACE</div>
+      <button className="new-workflow-button" onClick={onNew}>
+        <Icon name="plus" size={17} /> New workflow
+      </button>
+
+      <div className="sidebar-card">
+        <div className="sidebar-card-icon"><Icon name="activity" /></div>
+        <div><b>AI Workflow Engine</b><p>Describe a task to get started.</p></div>
+      </div>
+
+      <div className="sidebar-bottom">
+        <div className="connection-status"><span className="status-dot" /><span>Authenticated session</span></div>
+        {sessionId && <div className="session-reference">Session · {sessionId.slice(0, 8)}…</div>}
+        <div className="user-card">
+          <div className="avatar">{(user?.email || "U").charAt(0).toUpperCase()}</div>
+          <div className="user-info"><b>{user?.email || "User"}</b><small>Workspace member</small></div>
+          <button className="icon-button logout-button" onClick={onLogout} title="Sign out" aria-label="Sign out"><Icon name="logout" /></button>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function FieldPanel({ fields = [], steps = [], workflow, mode }) {
+  const [tab, setTab] = useState("fields");
+
+  const tabs = [
+    { id: "fields", label: "Fields", count: fields.length },
+    { id: "steps", label: "Steps", count: steps.length },
+    { id: "json", label: "Workflow", count: null },
+  ];
+
+  return (
+    <section className="details-panel">
+      <div className="panel-heading">
+        <div><div className="mini-label">WORKFLOW DETAILS</div><h3>Workspace inspector</h3></div>
+        <span className={`mode-badge ${mode === "ready" ? "ready" : ""}`}>{mode || "collecting"}</span>
+      </div>
+
+      <div className="inspector-tabs">
+        {tabs.map((item) => (
+          <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}>
+            {item.label}{item.count !== null && <span>{item.count}</span>}
+          </button>
+        ))}
+      </div>
+
+      <div className="inspector-content">
+        {tab === "fields" && (
+          fields.length ? fields.map((field, index) => (
+            <div className="field-row" key={field.key || index}>
+              <div className="field-row-top">
+                <span className="field-name">{field.key || field.parameter || "Field"}</span>
+                <span className={`field-status ${field.status || "missing"}`}>{field.status || "pending"}</span>
+              </div>
+              <div className="field-value">{field.display || (field.value == null ? "Awaiting input" : String(field.value))}</div>
+              {field.note && <div className="field-note">{field.note}</div>}
+            </div>
+          )) : <div className="empty-inspector"><Icon name="file" size={23} /><b>No fields collected yet</b><p>Start a conversation to populate workflow fields.</p></div>
+        )}
+
+        {tab === "steps" && (
+          steps.length ? steps.map((step, index) => (
+            <div className="step-row" key={step.id || index}>
+              <div className="step-number">{String(index + 1).padStart(2, "0")}</div>
+              <div><b>{step.title || step.operation || `Step ${index + 1}`}</b><p>{step.app || step.kind || "Workflow operation"}</p></div>
+            </div>
+          )) : <div className="empty-inspector"><Icon name="workflow" size={23} /><b>No steps yet</b><p>Your generated workflow will appear here.</p></div>
+        )}
+
+        {tab === "json" && (
+          workflow ? <pre className="workflow-json">{JSON.stringify(workflow, null, 2)}</pre>
+            : <div className="empty-inspector"><Icon name="file" size={23} /><b>No workflow generated</b><p>Complete the conversation to generate a workflow.</p></div>
+        )}
+      </div>
+
+      <div className="inspector-footer"><Icon name="shield" size={15} /> Workflow data is scoped to your account.</div>
+    </section>
+  );
+}
+
+function ChatMessage({ message }) {
+  return (
+    <div className={`message-row ${message.role === "user" ? "user-message-row" : ""}`}>
+      {message.role !== "user" && <div className="assistant-avatar"><Icon name="logo" size={17} /></div>}
+      <div className="message-content">
+        <div className="message-author">{message.role === "user" ? "You" : "Workflow Assistant"}</div>
+        <div className={`message-bubble ${message.role === "user" ? "user-bubble" : ""}`}>
+          {message.content}
+        </div>
+      </div>
+      {message.role === "user" && <div className="user-avatar">{message.content?.charAt(0)?.toUpperCase() || "Y"}</div>}
+    </div>
+  );
+}
+
+function App() {
+  const [user, setUser] = useState(() => getSavedUser());
+  const [token, setToken] = useState(() => sessionStorage.getItem("wb_access_token"));
+  const [sessionId, setSessionId] = useState(() => sessionStorage.getItem("wb_session_id") || "");
+  const [messages, setMessages] = useState(() => getSavedMessages());
+  const [view, setView] = useState(null);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [runInput, setRunInput] = useState("{}");
+  const [runResult, setRunResult] = useState(null);
+  const [running, setRunning] = useState(false);
+  const [showRun, setShowRun] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const bottomRef = useRef(null);
+  const inputRef = useRef(null);
+
+  const authenticated = Boolean(token && user);
+
+  const signOut = useCallback(() => {
+    clearAuth();
+    setToken(null);
+    setUser(null);
+    setSessionId("");
+    setMessages([]);
+    setView(null);
+    setRunResult(null);
+    setError("");
+  }, []);
+
+  useEffect(() => {
+    const handleExpired = () => {
+      signOut();
+      setError("Your session expired. Please sign in again.");
+    };
+
+    window.addEventListener("wb-auth-expired", handleExpired);
+    return () => window.removeEventListener("wb-auth-expired", handleExpired);
+  }, [signOut]);
+
+  useEffect(() => {
+    if (!authenticated) return;
+
+    let cancelled = false;
+
+    async function restoreSession() {
+      try {
+        await apiRequest("/auth/me");
+
+        if (cancelled) return;
+
+        if (sessionId) {
+          try {
+            const restored = await apiRequest(`/sessions/${encodeURIComponent(sessionId)}`);
+            if (!cancelled) setView(restored);
+          } catch (err) {
+            if (err.status === 404) {
+              sessionStorage.removeItem("wb_session_id");
+              if (!cancelled) setSessionId("");
+            } else {
+              throw err;
+            }
+          }
+        }
+      } catch (err) {
+        if (!cancelled) setError(err.message || "Could not restore your session.");
+      }
+    }
+
+    restoreSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authenticated, sessionId]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, busy]);
+
+  useEffect(() => {
+    saveMessages(messages);
+  }, [messages]);
+
+  function handleAuthenticated(nextUser) {
+    setUser(nextUser);
+    setToken(sessionStorage.getItem("wb_access_token"));
+    setError("");
+  }
+
+  function newWorkflow() {
+    setMessages([]);
+    setView(null);
+    setRunResult(null);
+    setError("");
+    setShowRun(false);
+    setRunInput("{}");
+
+    const id = crypto.randomUUID().replaceAll("-", "");
+    sessionStorage.setItem("wb_session_id", id);
+    sessionStorage.setItem("wb_messages", "[]");
+    setSessionId(id);
+
+    inputRef.current?.focus();
+  }
+
+  async function sendMessage(text) {
+    const message = text.trim();
+
+    if (!message || busy) return;
+
+    if (message.length > 4000) {
+      setError("Please keep your message under 4,000 characters.");
+      return;
+    }
+
+    setError("");
+    setBusy(true);
+    setInput("");
+
+    const userMessage = { role: "user", content: message };
+    setMessages((current) => [...current, userMessage]);
+
+    const activeSessionId = sessionId || crypto.randomUUID().replaceAll("-", "");
+
+    if (!sessionId) {
+      sessionStorage.setItem("wb_session_id", activeSessionId);
+      setSessionId(activeSessionId);
+    }
+
+    try {
+      const response = await apiRequest("/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          session_id: activeSessionId,
+          message,
+        }),
+      });
+
+      setView(response);
+      setRunResult(null);
+
+      const assistantMessage = {
+        role: "assistant",
+        content: response.reply || "Your workflow has been updated.",
+      };
+
+      setMessages((current) => [...current, assistantMessage]);
+    } catch (err) {
+      setError(err.message || "Could not send your message.");
+      setMessages((current) => [
+        ...current,
+        {
+          role: "assistant",
+          content: "I couldn't process that message. Check the error notice and try again.",
+          failed: true,
+        },
+      ]);
+    } finally {
+      setBusy(false);
+      inputRef.current?.focus();
+    }
+  }
+
+  async function executeWorkflow() {
+    if (!sessionId || !view?.workflow) {
+      setError("Generate a workflow before trying to execute it.");
+      return;
+    }
+
+    let parsedInput;
+
+    try {
+      parsedInput = JSON.parse(runInput || "{}");
+      if (!parsedInput || Array.isArray(parsedInput) || typeof parsedInput !== "object") {
+        throw new Error("Input must be a JSON object.");
+      }
+    } catch (err) {
+      setError(`Invalid JSON input: ${err.message}`);
+      return;
+    }
+
+    setRunning(true);
+    setError("");
+    setRunResult(null);
+
+    try {
+      const result = await apiRequest(
+        `/sessions/${encodeURIComponent(sessionId)}/run`,
+        {
+          method: "POST",
+          body: JSON.stringify({ input: parsedInput }),
+        }
+      );
+
+      setRunResult(result);
+    } catch (err) {
+      setError(err.message || "Workflow execution failed.");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  async function startOver() {
+    if (busy) return;
+    newWorkflow();
+  }
+
+  async function copyDiagram() {
+    if (!view?.diagram) return;
+
+    try {
+      await navigator.clipboard.writeText(view.diagram);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setError("Clipboard access failed. You can select and copy the diagram manually.");
+    }
+  }
+
+  if (!authenticated) {
+    return <AuthScreen onAuthenticated={handleAuthenticated} />;
+  }
+
+  const ready = Boolean(view?.workflow && view?.all_collected);
+  const hasMessages = messages.length > 0;
+
+  return (
+    <div className="app-shell">
+      <Sidebar
+        user={user}
+        sessionId={sessionId}
+        onNew={startOver}
+        onLogout={signOut}
+      />
+
+      <main className="main-area">
+        <header className="topbar">
+          <div className="breadcrumbs">
+            <span>Workspace</span><Icon name="chevron" size={14} /><b>Workflow builder</b>
+          </div>
+          <div className="topbar-right">
+            <span className="secure-pill"><Icon name="shield" size={14} /> Secure workspace</span>
+            <div className="topbar-avatar">{(user?.email || "U").charAt(0).toUpperCase()}</div>
+          </div>
+        </header>
+
+        <div className="workspace-grid">
+          <section className="chat-panel">
+            <div className="chat-heading">
+              <div>
+                <div className="mini-label">YOUR AI WORKSPACE</div>
+                <h1>Workflow builder</h1>
+                <p>Describe your goal. We'll turn it into an actionable workflow.</p>
+              </div>
+              <div className={`status-pill ${ready ? "status-ready" : ""}`}>
+                <span className="status-dot" /> {ready ? "Workflow ready" : "Gathering requirements"}
+              </div>
+            </div>
+
+            <div className="chat-body">
+              {!hasMessages && (
+                <div className="welcome-block">
+                  <div className="welcome-symbol"><Icon name="logo" size={31} /></div>
+                  <div className="mini-label">LET'S BUILD SOMETHING</div>
+                  <h2>What would you like<br />to <span>automate today?</span></h2>
+                  <p>Start with a goal. You can refine the details as we go.</p>
+                  <div className="suggestion-grid">
+                    {[
+                      ["Research assistant", "Build a workflow to summarize research papers."],
+                      ["Data processing", "Create a workflow to validate and transform a CSV file."],
+                      ["Content pipeline", "Build a workflow to draft and review a blog post."],
+                    ].map(([title, prompt]) => (
+                      <button key={title} className="suggestion-card" onClick={() => sendMessage(prompt)} disabled={busy}>
+                        <span>{title}</span><p>{prompt}</p><Icon name="chevron" size={16} />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {hasMessages && (
+                <div className="message-list">
+                  {messages.map((message, index) => (
+                    <ChatMessage key={`${index}-${message.role}`} message={message} />
+                  ))}
+                  {busy && (
+                    <div className="message-row">
+                      <div className="assistant-avatar"><Icon name="logo" size={17} /></div>
+                      <div className="message-content"><div className="message-author">Workflow Assistant</div><div className="typing-indicator"><i /><i /><i /></div></div>
+                    </div>
+                  )}
+                  <div ref={bottomRef} />
+                </div>
+              )}
+            </div>
+
+            {error && (
+              <div className="error-banner" role="alert">
+                <span>{error}</span>
+                <button onClick={() => setError("")} aria-label="Dismiss error">×</button>
+              </div>
+            )}
+
+            <form
+              className="composer"
+              onSubmit={(event) => {
+                event.preventDefault();
+                sendMessage(input);
+              }}
+            >
+              <textarea
+                ref={inputRef}
+                rows="1"
+                maxLength={4000}
+                placeholder="Describe the workflow you want to build..."
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    sendMessage(input);
+                  }
+                }}
+                disabled={busy}
+              />
+              <div className="composer-bottom">
+                <span>Be specific for better results <span className="keyboard-hint">· Enter to send</span></span>
+                <div className="composer-actions">
+                  <span className="character-count">{input.length}/4000</span>
+                  <button type="submit" className="send-button" disabled={busy || !input.trim()} aria-label="Send message">
+                    <Icon name="send" size={17} /> <span>Send</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+
+            <div className="chat-disclaimer">AI-generated workflows may need review. Inspect the workflow before execution.</div>
+          </section>
+
+          <aside className="right-column">
+            <FieldPanel
+              fields={view?.fields || []}
+              steps={view?.steps || []}
+              workflow={view?.workflow}
+              mode={view?.mode}
+            />
+
+            <section className="diagram-panel">
+              <div className="panel-heading">
+                <div><div className="mini-label">VISUAL OVERVIEW</div><h3>Workflow diagram</h3></div>
+                {view?.diagram && <button className="icon-button" onClick={copyDiagram} title="Copy diagram source" aria-label="Copy diagram">{copied ? <Icon name="check" /> : <Icon name="copy" />}</button>}
+              </div>
+
+              {view?.diagram ? (
+                <pre className="diagram-code">{view.diagram}</pre>
+              ) : (
+                <div className="diagram-empty">
+                  <div className="diagram-placeholder">
+                    <div className="diagram-node">Your goal</div>
+                    <div className="diagram-line" />
+                    <div className="diagram-node muted-node">Workflow steps</div>
+                    <div className="diagram-line" />
+                    <div className="diagram-node muted-node">Result</div>
+                  </div>
+                  <p>Your diagram will appear when a workflow is generated.</p>
+                </div>
+              )}
+            </section>
+
+            {view?.workflow && (
+              <section className="execute-panel">
+                <div className="panel-heading">
+                  <div><div className="mini-label">EXECUTION</div><h3>Run workflow</h3></div>
+                  <span className="ready-dot" />
+                </div>
+                <p className="execute-description">Review the generated workflow and provide any required input before running it.</p>
+                <button className="secondary-button full-button" onClick={() => setShowRun(!showRun)}>
+                  <Icon name="play" size={16} /> {showRun ? "Hide execution options" : "Configure execution"}
+                </button>
+
+                {showRun && (
+                  <div className="run-config">
+                    <label htmlFor="run-input">Input JSON</label>
+                    <textarea id="run-input" value={runInput} onChange={(event) => setRunInput(event.target.value)} rows={5} spellCheck="false" />
+                    <button className="primary-button full-button" onClick={executeWorkflow} disabled={running}>
+                      {running ? <span className="spinner" /> : <Icon name="play" size={15} />}
+                      {running ? "Running..." : "Execute workflow"}
+                    </button>
+                  </div>
+                )}
+
+                {runResult && (
+                  <div className="run-results">
+                    <b>Execution results</b>
+                    {runResult.steps?.length ? runResult.steps.map((step, index) => (
+                      <div className="result-step" key={step.id || index}>
+                        <div><span className={`result-status ${step.status === "ok" ? "result-ok" : ""}`} />{step.name || `Step ${index + 1}`}</div>
+                        <span className="result-status-text">{step.status}</span>
+                        {step.error && <p>{step.error}</p>}
+                        {step.output !== undefined && step.output !== null && <pre>{JSON.stringify(step.output, null, 2)}</pre>}
+                      </div>
+                    )) : <pre>{JSON.stringify(runResult, null, 2)}</pre>}
+                  </div>
+                )}
+              </section>
+            )}
+          </aside>
+        </div>
+
+        <footer className="app-footer">
+          <span>Workflow Builder <span className="footer-separator">/</span> AI-powered automation</span>
+          <span><span className="status-dot" /> API-connected workspace</span>
+        </footer>
+      </main>
+    </div>
+  );
+}
+
+export default App;
