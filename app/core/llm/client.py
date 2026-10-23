@@ -6,6 +6,7 @@ import logging
 import math
 import re
 import time
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Protocol, TypeVar
@@ -22,6 +23,9 @@ logger = logging.getLogger(__name__)
 PROMPTS = Path(__file__).parent / "prompts"
 MAX_ATTEMPTS = 3
 DEFAULT_COOLDOWN_SECONDS = 60.0
+# Keys of a JSON schema node; a dict made only of these is a schema, not a value (see _unschema).
+SCHEMA_KEYS = frozenset({"type", "default", "enum", "description", "properties", "required", "items", "title",
+                         "anyOf", "additionalProperties"})
 RETRY_IN = re.compile(r"try again in ((?:\d+h)?(?:\d+m)?(?:[\d.]+s)?)", re.IGNORECASE)
 
 
@@ -44,8 +48,16 @@ class RateLimitedError(LLMError):
         return "about a minute" if minutes <= 1 else f"about {minutes} minutes"
 
 
+@dataclass
+class LLMCall:
+    """How one generate() call went, for the turn log. The caller passes a fresh one, so calls on the shared client
+    from different requests never mix their details."""
+
+    unwrapped: bool = False  # the reply came wrapped in its JSON schema and was unwrapped in code
+
+
 class StructuredLLM(Protocol):
-    def generate(self, schema: type[T], prompt: str, user_prompt: str) -> T: ...
+    def generate(self, schema: type[T], prompt: str, user_prompt: str, call: LLMCall | None = None) -> T: ...
 
 
 @lru_cache
@@ -61,8 +73,10 @@ class LLMClient:
         self._max_attempts = max_attempts
         self._cooldown_until: dict[str, float] = {}
 
-    def generate(self, schema: type[T], prompt: str, user_prompt: str) -> T:
-        """Call a model with `prompt` (a file in llm/prompts) and validate the reply against `schema`."""
+    def generate(self, schema: type[T], prompt: str, user_prompt: str, call: LLMCall | None = None) -> T:
+        """Call a model with `prompt` (a file in llm/prompts) and validate the reply against `schema`. Details of
+        the call are recorded in `call`, if given."""
+        call = call if call is not None else LLMCall()
         messages = [SystemMessage(content=load_prompt(prompt)), HumanMessage(content=user_prompt)]
         last_error: Exception | None = None
         waits: list[float] = []
@@ -72,7 +86,7 @@ class LLMClient:
                 waits.append(remaining)
                 continue
             try:
-                return self._generate(name, model, schema, prompt, messages)
+                return self._generate(name, model, schema, prompt, messages, call)
             except _RateLimited as exc:
                 wait = exc.retry_after or DEFAULT_COOLDOWN_SECONDS
                 self._cooldown_until[name] = time.monotonic() + wait
@@ -85,7 +99,8 @@ class LLMClient:
             raise RateLimitedError(f"every model is rate limited: {last_error}", min(waits)) from last_error
         raise LLMError(f"{schema.__name__} generation failed: {last_error}") from last_error
 
-    def _generate(self, name: str, model: BaseChatModel, schema: type[T], prompt: str, messages: list) -> T:
+    def _generate(self, name: str, model: BaseChatModel, schema: type[T], prompt: str, messages: list,
+                  call: LLMCall) -> T:
         # Groq's Structured Outputs: the reply is JSON for the schema, not a tool call, so the model cannot skip
         # the call or misname the tool. Best-effort mode: our schema has optional fields, which strict mode forbids.
         runnable = model.with_structured_output(schema, method="json_schema")
@@ -105,9 +120,19 @@ class LLMClient:
                     raise _RateLimited(_retry_after(exc)) from exc
                 recovered = _recover(exc, schema)
                 if recovered is not None:
-                    logger.warning("llm %s with %s: the provider rejected the reply (%s); it passed our own schema",
-                                   prompt, name, _reason(exc))
-                    return recovered
+                    parsed, unwrapped = recovered
+                    if unwrapped:
+                        # The provider answered 200; it was our parser that rejected the schema-shaped reply.
+                        call.unwrapped = True
+                        logger.info("llm %s with %s: planner output was schema-wrapped; unwrapped and validated "
+                                    "locally", prompt, name)
+                    elif _error_body(exc).get("failed_generation"):
+                        logger.warning("llm %s with %s: the provider rejected the reply (%s); it passed our own "
+                                       "schema", prompt, name, _reason(exc))
+                    else:
+                        logger.warning("llm %s with %s: the reply failed to parse (%s); it passed our own schema",
+                                       prompt, name, _reason(exc))
+                    return parsed
                 last_error = exc
                 logger.warning("llm %s attempt %d with %s failed: %s", prompt, attempt, name, _reason(exc))
         logger.error("llm %s failed with %s: %s", prompt, name, last_error)
@@ -133,11 +158,15 @@ def _error_body(exc: Exception) -> dict:
     return body if isinstance(body, dict) else {}
 
 
-def _recover(exc: Exception, schema: type[T]) -> T | None:
-    """Groq checks a tool call against the JSON schema strictly and rejects small slips (890 for "890").
-    Its error carries the model's reply ("failed_generation"); if that reply passes our own schema, use it.
-    Grounding and validation still decide every value, as for any reply."""
-    raw = _error_body(exc).get("failed_generation")
+def _recover(exc: Exception, schema: type[T]) -> tuple[T, bool] | None:
+    """A reply that was rejected but still holds a usable answer:
+    - Groq checks a tool call against the JSON schema strictly and rejects small slips (890 for "890"); its error
+      carries the model's reply ("failed_generation").
+    - LangChain could not parse the reply (`llm_output`), e.g. when gpt-oss-120b wraps its answer in the schema:
+      {"description": "", "properties": {"message_kind": "build", …}, "required": […]}.
+    If the reply, unwrapped, passes our own schema, it is returned with whether it was schema-wrapped. Grounding
+    and validation still decide every value, as for any reply."""
+    raw = _error_body(exc).get("failed_generation") or getattr(exc, "llm_output", None)
     if not isinstance(raw, str):
         return None
     try:
@@ -145,9 +174,39 @@ def _recover(exc: Exception, schema: type[T]) -> T | None:
         if isinstance(data, dict) and isinstance(data.get("arguments"), (dict, str)):  # {"name": …, "arguments": …}
             data = data["arguments"]
             data = json.loads(data) if isinstance(data, str) else data
-        return schema.model_validate(data)
+        wrapped = isinstance(data, dict) and isinstance(data.get("properties"), dict)
+        if wrapped:
+            data = _unschema(data)
+        return schema.model_validate(data), wrapped
     except (ValueError, ValidationError):
         return None
+
+
+def _unschema(value):
+    """The values of a reply written as a JSON schema: {"properties": {…}} is its values, {"enum": ["build"]} is
+    "build", {"type": "null"} or {"default": null} is None. A schema node with no value ({"type": "array"}) is left
+    out, so the field gets its default. Anything else is kept as it is."""
+    if isinstance(value, list):
+        return [v for v in map(_unschema, value) if v is not _NO_VALUE]
+    if not isinstance(value, dict):
+        return value
+    if value and value.keys() <= SCHEMA_KEYS:
+        if isinstance(value.get("properties"), dict):
+            return _values(value["properties"])
+        if "default" in value:
+            return value["default"]
+        enum = value.get("enum")
+        if isinstance(enum, list) and len(enum) == 1:
+            return enum[0]
+        return None if value.get("type") == "null" else _NO_VALUE
+    return _values(value)
+
+
+def _values(fields: dict) -> dict:
+    return {k: v for k, v in ((k, _unschema(v)) for k, v in fields.items()) if v is not _NO_VALUE}
+
+
+_NO_VALUE = object()
 
 
 def _reason(exc: Exception) -> str:

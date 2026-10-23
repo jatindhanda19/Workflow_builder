@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -10,6 +10,11 @@ FieldValue = str | list[str]
 Mode = Literal["collecting", "ready", "post_generation"]
 LogEvent = Literal["asked", "filled", "overwritten", "rejected", "ignored", "cleared"]
 APP = "app"  # pseudo-parameter: the app of a step that is not decided yet
+OPERATION = "operation"  # pseudo-parameter: what a step does in its app, while it is not decided yet
+# Operations code gives a step it had to add or that came without one; they say nothing about the automation.
+TRIGGER_PLACEHOLDER = "Start the workflow"
+ACTION_PLACEHOLDER = "Do something with the result"
+PLACEHOLDER_OPERATIONS = frozenset({TRIGGER_PLACEHOLDER, ACTION_PLACEHOLDER, "Step"})
 
 
 PreviousReason = Literal["edited", "new_workflow"]
@@ -96,6 +101,11 @@ class Step(BaseModel):
     def param(self, name: str) -> Param | None:
         return next((p for p in self.params if p.name == name), None)
 
+    @property
+    def needs_operation(self) -> bool:
+        """Its app is known but what it does there is not: a workflow with such a step is not finished."""
+        return self.kind != "condition" and bool(self.app) and self.operation in PLACEHOLDER_OPERATIONS
+
 
 class LogEntry(BaseModel):
     turn: int
@@ -127,6 +137,7 @@ class WorkflowState(BaseModel):
     plan: TurnPlan | None = None
     picked: str | None = None
     llm_failed: bool = False
+    llm_call: dict[str, Any] | None = None  # how this turn's LLM call went (app.core.llm.LLMCall), for the turn log
     changes: list[str] = Field(default_factory=list)
     reply: str | None = None
     reply_parts: ReplyParts | None = None  # the same reply in pieces; None: just `reply` as text

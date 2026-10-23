@@ -2,6 +2,7 @@
 
 import pytest
 import requests
+from auth_test_utils import authenticate_test_client
 from fastapi.testclient import TestClient
 
 import app.main as main
@@ -113,12 +114,13 @@ def test_http_error_status_fails_the_step():
 def test_run_endpoint(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "store", SessionStore(tmp_path / "sessions.db"))
     client = TestClient(main.app)
+    owner = authenticate_test_client(client)["id"]
     assert client.post("/sessions/nope/run", json={}).status_code == 404
-    main.store.save("s1", WorkflowState())
+    main.store.save("s1", WorkflowState(), owner_id=owner)
     assert client.post("/sessions/s1/run", json={}).status_code == 409
     workflow = _invoice_workflow()
     workflow.nodes[2] = _node("notify", "gmail_send_email", "Gmail", "Send email")
-    main.store.save("s1", WorkflowState(workflow=workflow))
+    main.store.save("s1", WorkflowState(workflow=workflow), owner_id=owner)
     response = client.post("/sessions/s1/run", json={"input": {"amount": 5}})
     assert response.status_code == 422 and "Gmail" in response.json()["detail"]
 
@@ -133,3 +135,35 @@ def test_is_empty_condition_is_true_when_the_field_is_missing():
         results = run_workflow(workflow, data, send=FakeHTTP(), env=SLACK)
         assert results[1].output["result"] is expected
         assert results[2].status == ("ok" if expected else "skipped")
+
+
+@pytest.mark.parametrize("url", ["http://169.254.169.254/latest/meta-data/", "http://localhost:8001/admin",
+                                 "http://10.0.0.5/", "file:///etc/passwd", "http://user:pw@example.com/"])
+def test_http_request_to_a_non_public_address_is_refused_before_sending(url):
+    workflow = _invoice_workflow()
+    workflow.nodes[3] = _node("archive", "http_request_post", "HTTP Request", "POST", url=url)
+    http = FakeHTTP()
+    results = run_workflow(workflow, {"amount": 10}, send=http, env=SLACK)
+    assert results[3].status == "failed" and "cannot be called" in results[3].error
+    assert http.calls == []
+
+
+def test_safe_request_blocks_a_public_name_that_resolves_to_a_private_address(monkeypatch):
+    from app.runtime import executor
+
+    sent = []
+    monkeypatch.setattr(executor.requests, "request", lambda *a, **kw: sent.append((a, kw)))
+    monkeypatch.setattr("socket.getaddrinfo", lambda *a, **kw: [(2, 1, 6, "", ("127.0.0.1", 443))])
+    with pytest.raises(executor.BlockedDestination):
+        executor.safe_request("GET", "https://evil.example.com/")
+    assert sent == []
+
+    monkeypatch.setattr("socket.getaddrinfo", lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 443))])
+    executor.safe_request("GET", "https://example.com/", timeout=10)
+    assert sent == [(("GET", "https://example.com/"), {"allow_redirects": False, "timeout": 10})]
+
+
+def test_step_errors_shown_to_the_user_hold_no_personal_data():
+    http = FakeHTTP(FakeResponse(500, text="no account for jane@example.com"))
+    results = run_workflow(_invoice_workflow(), {"amount": 10}, send=http, env=SLACK)
+    assert "jane@example.com" not in results[3].error and "[EMAIL]" in results[3].error

@@ -11,6 +11,7 @@ TURN_SCRATCH = {
     "plan": None,
     "picked": None,
     "llm_failed": False,
+    "llm_call": None,
     "changes": [],
     "reply": None,
     "reply_parts": None,

@@ -1,6 +1,17 @@
+# Secrets
 .env
+
+# Python
 __pycache__/
-.venv/
 *.pyc
+.venv/
+.pytest_cache/
+
+# Local data
 .sessions/
-sessions.db
+sessions.db*
+auth.db*
+
+# Frontend: installed and built locally (npm install, npm run build)
+node_modules/
+frontend/react-app/dist/

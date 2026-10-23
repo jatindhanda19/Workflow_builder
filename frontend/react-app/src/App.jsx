@@ -1,5 +1,5 @@
 import React from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   apiRequest,
   clearAuth,
@@ -8,6 +8,88 @@ import {
   saveAuth,
   saveMessages,
 } from "./api.js";
+import MermaidDiagram from "./MermaidDiagram.jsx";
+
+const APP_NAME = "Flowwright";
+const TAGLINE = [
+  ["describe", "Describe it."],
+  ["validate", "Validate it."],
+  ["automate", "Automate it."],
+];
+
+// A gradient id unique to each SVG instance: Chrome does not paint a gradient whose first definition sits in a
+// hidden element (the mobile brand is hidden on desktop), so instances must not share one.
+function useSvgId(prefix) {
+  return `${prefix}-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
+}
+
+// The Flowwright app icon: the "F" flow (start node, path, validated step, end node) on the purple tile.
+function LogoMark({ className = "brand-mark" }) {
+  const gradient = useSvgId("logo-bg");
+  return (
+    <svg className={className} viewBox="0 0 1024 1024" role="img" aria-label={APP_NAME}>
+      <defs>
+        <linearGradient id={gradient} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#a48cff" />
+          <stop offset="1" stopColor="#6f4be6" />
+        </linearGradient>
+      </defs>
+      <rect width="1024" height="1024" rx="232" fill={`url(#${gradient})`} />
+      <g fill="none" stroke="#fff" strokeLinecap="round" strokeWidth="76">
+        <path d="M339 658V425a151 151 0 0 1 151-151h90" />
+        <path d="M339 511h140" />
+      </g>
+      <circle cx="652" cy="274" r="76" fill="#fff" />
+      <circle cx="339" cy="749" r="54" fill="none" stroke="#fff" strokeWidth="38" />
+      <circle cx="555" cy="511" r="65" fill="#4ade80" />
+      <path d="M523 515l25 24 40-48" fill="none" stroke="#0b0d12" strokeWidth="20" strokeLinecap="round"
+        strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+// The "F" flow on its own, for small spots that already have a tile (assistant avatar, welcome symbol).
+function LogoGlyph({ size = 18 }) {
+  const gradient = useSvgId("logo-node");
+  return (
+    <svg width={size} height={size} viewBox="177 190 640 640" aria-hidden="true">
+      <defs>
+        <linearGradient id={gradient} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stopColor="#a48cff" />
+          <stop offset="1" stopColor="#7aa0ff" />
+        </linearGradient>
+      </defs>
+      <g fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="76">
+        <path d="M339 658V425a151 151 0 0 1 151-151h90" />
+        <path d="M339 511h140" />
+      </g>
+      <circle cx="652" cy="274" r="76" fill={`url(#${gradient})`} />
+      <circle cx="339" cy="749" r="54" fill="none" stroke="currentColor" strokeWidth="38" />
+      <circle cx="555" cy="511" r="65" fill="#4ade80" />
+      <path d="M523 515l25 24 40-48" fill="none" stroke="#0b0d12" strokeWidth="20" strokeLinecap="round"
+        strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function Brand({ className = "" }) {
+  return (
+    <div className={`brand ${className}`.trim()}>
+      <LogoMark />
+      <span className="brand-name">{APP_NAME}</span>
+    </div>
+  );
+}
+
+function Tagline() {
+  return (
+    <div className="tagline">
+      {TAGLINE.map(([key, text]) => (
+        <span key={key}><i className={`tagline-dot ${key}`} aria-hidden="true" />{text}</span>
+      ))}
+    </div>
+  );
+}
 
 function Icon({ name, size = 18 }) {
   const common = {
@@ -23,7 +105,6 @@ function Icon({ name, size = 18 }) {
   };
 
   const paths = {
-    logo: <><rect x="3" y="3" width="7" height="7" rx="2" /><rect x="14" y="3" width="7" height="7" rx="2" /><rect x="3" y="14" width="7" height="7" rx="2" /><path d="M17.5 14v7M14 17.5h7" /></>,
     send: <><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></>,
     plus: <><path d="M12 5v14M5 12h14" /></>,
     logout: <><path d="M10 17l5-5-5-5" /><path d="M15 12H3" /><path d="M12 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-7" /></>,
@@ -111,10 +192,7 @@ function AuthScreen({ onAuthenticated }) {
   return (
     <main className="auth-layout">
       <section className="auth-story">
-        <div className="brand">
-          <div className="brand-mark"><Icon name="logo" size={23} /></div>
-          <span>workflow<span className="brand-light">.builder</span></span>
-        </div>
+        <Brand />
 
         <div className="story-content">
           <div className="eyebrow"><span className="status-dot" /> INTELLIGENT AUTOMATION</div>
@@ -131,15 +209,12 @@ function AuthScreen({ onAuthenticated }) {
           </div>
         </div>
 
-        <div className="story-footer">WORKFLOW BUILDER <span>·</span> AI AUTOMATION WORKSPACE</div>
+        <Tagline />
       </section>
 
       <section className="auth-panel">
         <div className="auth-card">
-          <div className="mobile-brand brand">
-            <div className="brand-mark"><Icon name="logo" size={23} /></div>
-            <span>workflow<span className="brand-light">.builder</span></span>
-          </div>
+          <Brand className="mobile-brand" />
 
           <div className="auth-heading">
             <div className="mini-label">{mode === "login" ? "WELCOME BACK" : "GET STARTED"}</div>
@@ -200,7 +275,7 @@ function AuthScreen({ onAuthenticated }) {
           </form>
 
           <div className="auth-switch">
-            {mode === "login" ? "New to Workflow Builder?" : "Already have an account?"}
+            {mode === "login" ? `New to ${APP_NAME}?` : "Already have an account?"}
             {" "}
             <button
               type="button"
@@ -221,23 +296,54 @@ function AuthScreen({ onAuthenticated }) {
   );
 }
 
-function Sidebar({ user, sessionId, onNew, onLogout }) {
+function formatWhen(timestamp) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "";
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return sameDay
+    ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : date.toLocaleDateString([], { day: "numeric", month: "short" });
+}
+
+// Server messages ({role, content, options, parts}) as the chat list shows them.
+function toChatMessages(messages = []) {
+  return messages.map((message) => ({ role: message.role, content: message.content }));
+}
+
+function Sidebar({ user, sessionId, sessions, busy, onNew, onSelect, onLogout }) {
   return (
     <aside className="sidebar">
-      <div className="brand sidebar-brand">
-        <div className="brand-mark"><Icon name="logo" size={23} /></div>
-        <span>workflow<span className="brand-light">.builder</span></span>
-      </div>
+      <Brand className="sidebar-brand" />
 
       <div className="sidebar-label">WORKSPACE</div>
-      <button className="new-workflow-button" onClick={onNew}>
+      <button className="new-workflow-button" onClick={onNew} disabled={busy}>
         <Icon name="plus" size={17} /> New workflow
       </button>
 
-      <div className="sidebar-card">
-        <div className="sidebar-card-icon"><Icon name="activity" /></div>
-        <div><b>AI Workflow Engine</b><p>Describe a task to get started.</p></div>
-      </div>
+      {sessions.length > 0 ? (
+        <nav className="session-list" aria-label="Your sessions">
+          <div className="sidebar-label">RECENT</div>
+          {sessions.map((session) => (
+            <button
+              key={session.id}
+              type="button"
+              className={`session-item ${session.id === sessionId ? "active" : ""}`}
+              onClick={() => onSelect(session.id)}
+              disabled={busy}
+              aria-current={session.id === sessionId ? "page" : undefined}
+              title={session.title}
+            >
+              <span className="session-title">{session.title}</span>
+              <small>{session.generated ? "Workflow ready" : "In progress"} · {formatWhen(session.updated_at)}</small>
+            </button>
+          ))}
+        </nav>
+      ) : (
+        <div className="sidebar-card">
+          <div className="sidebar-card-icon"><Icon name="activity" /></div>
+          <div><b>AI Workflow Engine</b><p>Describe a task to get started.</p></div>
+        </div>
+      )}
 
       <div className="sidebar-bottom">
         <div className="connection-status"><span className="status-dot" /><span>Authenticated session</span></div>
@@ -313,7 +419,7 @@ function FieldPanel({ fields = [], steps = [], workflow, mode }) {
 function ChatMessage({ message }) {
   return (
     <div className={`message-row ${message.role === "user" ? "user-message-row" : ""}`}>
-      {message.role !== "user" && <div className="assistant-avatar"><Icon name="logo" size={17} /></div>}
+      {message.role !== "user" && <div className="assistant-avatar"><LogoGlyph size={17} /></div>}
       <div className="message-content">
         <div className="message-author">{message.role === "user" ? "You" : "Workflow Assistant"}</div>
         <div className={`message-bubble ${message.role === "user" ? "user-bubble" : ""}`}>
@@ -330,6 +436,7 @@ function App() {
   const [token, setToken] = useState(() => sessionStorage.getItem("wb_access_token"));
   const [sessionId, setSessionId] = useState(() => sessionStorage.getItem("wb_session_id") || "");
   const [messages, setMessages] = useState(() => getSavedMessages());
+  const [sessions, setSessions] = useState([]);
   const [view, setView] = useState(null);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -351,9 +458,30 @@ function App() {
     setUser(null);
     setSessionId("");
     setMessages([]);
+    setSessions([]);
     setView(null);
     setRunResult(null);
     setError("");
+  }, []);
+
+  // The sidebar list. A failure only leaves the list as it was: the chat itself still works.
+  const refreshSessions = useCallback(async () => {
+    try {
+      const list = await apiRequest("/sessions");
+      setSessions(Array.isArray(list) ? list : []);
+    } catch {
+      // apiRequest already signs the user out on 401; other errors are shown when they matter (sending a message).
+    }
+  }, []);
+
+  // Shows a stored session: its messages and workflow state come from the server, the source of truth.
+  const showSession = useCallback((session) => {
+    setView(session);
+    setMessages(toChatMessages(session.messages));
+    setSessionId(session.session_id);
+    sessionStorage.setItem("wb_session_id", session.session_id);
+    setRunResult(null);
+    setShowRun(false);
   }, []);
 
   useEffect(() => {
@@ -366,28 +494,30 @@ function App() {
     return () => window.removeEventListener("wb-auth-expired", handleExpired);
   }, [signOut]);
 
+  // Runs once on sign-in or page load: checks the token, loads the session list and reopens the last session.
+  // It must not re-run when sessionId changes: a new session only exists after its first /chat reply.
   useEffect(() => {
     if (!authenticated) return;
 
     let cancelled = false;
+    const savedId = sessionStorage.getItem("wb_session_id");
 
     async function restoreSession() {
       try {
         await apiRequest("/auth/me");
-
         if (cancelled) return;
+        refreshSessions();
+        if (!savedId) return;
 
-        if (sessionId) {
-          try {
-            const restored = await apiRequest(`/sessions/${encodeURIComponent(sessionId)}`);
-            if (!cancelled) setView(restored);
-          } catch (err) {
-            if (err.status === 404) {
-              sessionStorage.removeItem("wb_session_id");
-              if (!cancelled) setSessionId("");
-            } else {
-              throw err;
-            }
+        try {
+          const restored = await apiRequest(`/sessions/${encodeURIComponent(savedId)}`);
+          if (!cancelled && sessionStorage.getItem("wb_session_id") === savedId) showSession(restored);
+        } catch (err) {
+          if (err.status !== 404) throw err;
+          // Gone on the backend: forget it, unless the user has started another session meanwhile.
+          if (sessionStorage.getItem("wb_session_id") === savedId) {
+            sessionStorage.removeItem("wb_session_id");
+            if (!cancelled) setSessionId("");
           }
         }
       } catch (err) {
@@ -400,7 +530,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [authenticated, sessionId]);
+  }, [authenticated, refreshSessions, showSession]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -424,12 +554,23 @@ function App() {
     setShowRun(false);
     setRunInput("{}");
 
-    const id = crypto.randomUUID().replaceAll("-", "");
-    sessionStorage.setItem("wb_session_id", id);
+    // No id yet: the server creates the session, and its id, on the first message.
+    sessionStorage.removeItem("wb_session_id");
     sessionStorage.setItem("wb_messages", "[]");
-    setSessionId(id);
+    setSessionId("");
 
     inputRef.current?.focus();
+  }
+
+  async function openSession(id) {
+    if (busy || id === sessionId) return;
+    setError("");
+    try {
+      showSession(await apiRequest(`/sessions/${encodeURIComponent(id)}`));
+    } catch (err) {
+      setError(err.message || "Could not open that session.");
+      if (err.status === 404) refreshSessions();  // deleted meanwhile: drop it from the list
+    }
   }
 
   async function sendMessage(text) {
@@ -449,24 +590,20 @@ function App() {
     const userMessage = { role: "user", content: message };
     setMessages((current) => [...current, userMessage]);
 
-    const activeSessionId = sessionId || crypto.randomUUID().replaceAll("-", "");
-
-    if (!sessionId) {
-      sessionStorage.setItem("wb_session_id", activeSessionId);
-      setSessionId(activeSessionId);
-    }
-
     try {
       const response = await apiRequest("/chat", {
         method: "POST",
         body: JSON.stringify({
-          session_id: activeSessionId,
+          session_id: sessionId || undefined,  // omitted for a new chat: the server creates the session
           message,
         }),
       });
 
       setView(response);
       setRunResult(null);
+      sessionStorage.setItem("wb_session_id", response.session_id);
+      setSessionId(response.session_id);
+      refreshSessions();
 
       const assistantMessage = {
         role: "assistant",
@@ -552,13 +689,18 @@ function App() {
 
   const ready = Boolean(view?.workflow && view?.all_collected);
   const hasMessages = messages.length > 0;
+  // The backend leaves a question's options out of the reply text; they are shown as buttons here.
+  const question = view?.question;
 
   return (
     <div className="app-shell">
       <Sidebar
         user={user}
         sessionId={sessionId}
+        sessions={sessions}
+        busy={busy}
         onNew={startOver}
+        onSelect={openSession}
         onLogout={signOut}
       />
 
@@ -589,7 +731,7 @@ function App() {
             <div className="chat-body">
               {!hasMessages && (
                 <div className="welcome-block">
-                  <div className="welcome-symbol"><Icon name="logo" size={31} /></div>
+                  <div className="welcome-symbol"><LogoGlyph size={31} /></div>
                   <div className="mini-label">LET'S BUILD SOMETHING</div>
                   <h2>What would you like<br />to <span>automate today?</span></h2>
                   <p>Start with a goal. You can refine the details as we go.</p>
@@ -614,7 +756,7 @@ function App() {
                   ))}
                   {busy && (
                     <div className="message-row">
-                      <div className="assistant-avatar"><Icon name="logo" size={17} /></div>
+                      <div className="assistant-avatar"><LogoGlyph size={17} /></div>
                       <div className="message-content"><div className="message-author">Workflow Assistant</div><div className="typing-indicator"><i /><i /><i /></div></div>
                     </div>
                   )}
@@ -630,6 +772,16 @@ function App() {
               </div>
             )}
 
+            {question?.options?.length > 0 && !busy && (
+              <div className="answer-options" role="group" aria-label="Suggested answers">
+                {question.options.map((option, index) => (
+                  <button key={option} type="button" className="answer-option" onClick={() => sendMessage(option)}>
+                    <span>{String.fromCharCode(65 + index)}</span>{option}
+                  </button>
+                ))}
+              </div>
+            )}
+
             <form
               className="composer"
               onSubmit={(event) => {
@@ -641,7 +793,11 @@ function App() {
                 ref={inputRef}
                 rows="1"
                 maxLength={4000}
-                placeholder="Describe the workflow you want to build..."
+                placeholder={
+                  question && !question.allow_custom
+                    ? "Pick one of the options above..."
+                    : "Describe the workflow you want to build..."
+                }
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={(event) => {
@@ -681,7 +837,7 @@ function App() {
               </div>
 
               {view?.diagram ? (
-                <pre className="diagram-code">{view.diagram}</pre>
+                <MermaidDiagram source={view.diagram} />
               ) : (
                 <div className="diagram-empty">
                   <div className="diagram-placeholder">
@@ -737,7 +893,7 @@ function App() {
         </div>
 
         <footer className="app-footer">
-          <span>Workflow Builder <span className="footer-separator">/</span> AI-powered automation</span>
+          <span>{APP_NAME} <span className="footer-separator">/</span> Describe it. Validate it. Automate it.</span>
           <span><span className="status-dot" /> API-connected workspace</span>
         </footer>
       </main>

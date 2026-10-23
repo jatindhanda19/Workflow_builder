@@ -14,7 +14,7 @@ class ScriptedLLM:
     def __init__(self, *plans: TurnPlan) -> None:
         self.plans = list(plans)
 
-    def generate(self, schema, prompt, user_prompt):
+    def generate(self, schema, prompt, user_prompt, call=None):
         return self.plans.pop(0)
 
 
@@ -124,7 +124,7 @@ def test_5_and_6_complete_details_generate_forms_airtable_gmail():
 
 
 class RateLimitedLLM:
-    def generate(self, schema, prompt, user_prompt):
+    def generate(self, schema, prompt, user_prompt, call=None):
         raise RateLimitedError("over quota", retry_after=1260)
 
 

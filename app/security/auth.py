@@ -1,22 +1,19 @@
-"""Authentication utilities for Workflow Builder."""
+"""Authentication utilities for Flowwright."""
 
 import os
 import re
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from uuid import uuid4
 
 import jwt
-from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pwdlib import PasswordHash
 
-load_dotenv()
-
-AUTH_DB = Path(os.getenv("AUTH_DB", "auth.db"))
 TOKEN_LIFETIME_MINUTES = 30
 TOKEN_ISSUER = "workflow-builder"
 ALGORITHM = "HS256"
@@ -27,6 +24,17 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 class AuthError(Exception):
     """Expected registration or login error."""
+
+
+def auth_db_path() -> Path:
+    """Read at call time, so AUTH_DB from .env or a test applies."""
+    return Path(os.getenv("AUTH_DB", "auth.db"))
+
+
+@lru_cache
+def _dummy_hash() -> str:
+    """Verified against when the email is unknown, so a login takes as long whether or not the account exists."""
+    return password_hasher.hash(uuid4().hex)
 
 
 def _secret() -> str:
@@ -42,9 +50,19 @@ def _secret() -> str:
     return value
 
 
+def validate_secret() -> None:
+    """Called at startup, so a missing or weak key stops the server instead of failing every login."""
+    _secret()
+
+
+_initialized: set[Path] = set()  # databases whose users table exists
+
+
 def _connect() -> sqlite3.Connection:
-    AUTH_DB.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(AUTH_DB, timeout=10)
+    path = auth_db_path()
+    if path not in _initialized:
+        init_auth_db()
+    db = sqlite3.connect(path, timeout=10)
     db.row_factory = sqlite3.Row
     return db
 
@@ -52,7 +70,10 @@ def _connect() -> sqlite3.Connection:
 def init_auth_db() -> None:
     """Create the users table if it does not exist."""
 
-    with closing(_connect()) as db, db:
+    path = auth_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with closing(sqlite3.connect(path, timeout=10)) as db, db:
         db.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -64,8 +85,10 @@ def init_auth_db() -> None:
             """
         )
 
-    if AUTH_DB.exists():
-        os.chmod(AUTH_DB, 0o600)
+    if path.exists():
+        os.chmod(path, 0o600)
+
+    _initialized.add(path)
 
 
 def register_user(email: str, password: str) -> dict:
@@ -106,9 +129,6 @@ def register_user(email: str, password: str) -> dict:
     except sqlite3.IntegrityError as exc:
         raise AuthError("An account with this email already exists.") from exc
 
-    if AUTH_DB.exists():
-        os.chmod(AUTH_DB, 0o600)
-
     return {"id": user_id, "email": normalized_email}
 
 
@@ -123,15 +143,12 @@ def authenticate_user(email: str, password: str) -> dict | None:
             (normalized_email,),
         ).fetchone()
 
-    if row is None:
-        return None
-
     try:
-        valid = password_hasher.verify(password, row["password_hash"])
+        valid = password_hasher.verify(password, row["password_hash"] if row else _dummy_hash())
     except (ValueError, TypeError):
         return None
 
-    if not valid:
+    if not valid or row is None:
         return None
 
     return {"id": row["id"], "email": row["email"]}

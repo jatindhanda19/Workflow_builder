@@ -55,6 +55,10 @@ def next_question(state: WorkflowState, predicted: NextQuestion | None) -> tuple
         return None
     # Questions follow the automation: only items of the earliest unfinished step can be asked.
     current = [i for i in items if i.step.id == items[0].step.id]
+    if current[0].param is None:
+        # The step's app, then what it does there, come before its settings: which settings a step has depends on
+        # them, so asking "which model?" before the app is known lets the user pick an app with no such setting.
+        current = current[:1]
     item, use_ai = _resolve(state, current, predicted)
     text = _clean(predicted.question) if use_ai and predicted else ""
     text = text or _fallback_text(item)
@@ -75,7 +79,7 @@ def _resolve(state: WorkflowState, current: list[OpenItem], predicted: NextQuest
         return exact, True
     # The AI may name a step that is still a placeholder ("email_trigger.app" for "trigger.app").
     step_id, _, name = target.partition(".")
-    if name == APP and current[0].param is None and state.step(step_id) is None:
+    if name == APP and current[0].param is None and not current[0].is_operation and state.step(step_id) is None:
         return current[0], True
     return current[0], False
 
@@ -121,6 +125,8 @@ def _options(item: OpenItem, suggested: list[str], user_text: str) -> list[Quest
     if param is not None and param.kind in ("email", "email_list"):
         # Only addresses the user wrote: an invented address is a guess.
         suggested = [s for s in suggested if "{{" in s or s.strip().lower() in user_text]
+    if item.is_operation:
+        return _dedupe([s.strip() for s in suggested if s.strip()])  # the planner's ideas; typing is always allowed
     if param is None:
         apps = [s.strip() for s in suggested if s.strip()]
         if len(apps) < 2:
@@ -158,6 +164,10 @@ def _goal_question(predicted: NextQuestion | None) -> Question:
 
 def _fallback_text(item: OpenItem) -> str:
     operation = item.step.operation[:1].lower() + item.step.operation[1:]
+    if item.is_operation:
+        if item.step.kind == "trigger":
+            return f"Which {item.step.app} event should start the workflow?"
+        return f"What should {item.step.app} do in this step?"
     if item.param is None:
         if item.step.kind == "trigger":
             return f'Which app should I watch for "{operation}"?'

@@ -12,11 +12,12 @@
 """
 
 import logging
+from dataclasses import asdict
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from app.core.llm import LLMError, RateLimitedError, StructuredLLM
+from app.core.llm import LLMCall, LLMError, RateLimitedError, StructuredLLM
 from app.pipeline.generation.builder import GenerationError, generate_workflow, matches_draft
 from app.pipeline.merge import is_placeholder, merge_turn, typed_app_answer
 from app.pipeline.planner import plan_turn
@@ -78,14 +79,16 @@ def build_graph(llm: StructuredLLM):
         return {"pending_new_request": None, "reply_route": "plan"}
 
     def plan(state: WorkflowState) -> dict[str, Any]:
+        call = LLMCall()  # how the call went, for the turn log
         try:
-            return {"plan": plan_turn(llm, state)}
+            return {"plan": plan_turn(llm, state, call), "llm_call": asdict(call)}
         except RateLimitedError as exc:
             logger.warning("planning skipped: every model is rate limited (retry in %s)", exc.wait_text)
-            return {"plan": None, "llm_failed": True, "reply": RATE_LIMITED.format(wait=exc.wait_text)}
+            return {"plan": None, "llm_failed": True, "reply": RATE_LIMITED.format(wait=exc.wait_text),
+                    "llm_call": asdict(call)}
         except LLMError:
             logger.exception("planning failed after retries")
-            return {"plan": None, "llm_failed": True, "reply": AI_UNAVAILABLE}
+            return {"plan": None, "llm_failed": True, "reply": AI_UNAVAILABLE, "llm_call": asdict(call)}
 
     def merge(state: WorkflowState) -> dict[str, Any]:
         result = state.plan

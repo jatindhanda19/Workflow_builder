@@ -22,12 +22,34 @@ from app.pipeline.normalize import (
 )
 from app.pipeline.planner_schema import PlannedParam, PlannedStep, TurnPlan
 from app.pipeline.validation import EXPRESSION, FIELD, OPERATOR, VAGUE, VALUE, display, validate
-from app.state.models import APP, FieldValue, LogEntry, Param, Step, WorkflowState
+from app.state.models import (
+    ACTION_PLACEHOLDER,
+    APP,
+    OPERATION,
+    PLACEHOLDER_OPERATIONS,
+    TRIGGER_PLACEHOLDER,
+    FieldValue,
+    LogEntry,
+    Param,
+    Step,
+    WorkflowState,
+)
 
 CONDITION_APP = "If"
 GOAL = "workflow."  # target of the clarifying question asked before anything can be planned
 # Built-in nodes the user's wording can imply ("every Monday" → Schedule); any other app must be named.
 BUILTIN_APPS = frozenset({"schedule", "webhook", "manual", "if", "http request", "code", "wait", "merge"})
+# The apps named in prompts/planner.txt, by every name users give them. Used only to read an app the planner left
+# null from its own evidence or step id ("gmail_trigger"); the user can still name any other app.
+_APPS = ("Gmail", "Outlook", "Slack", "Microsoft Teams", "Discord", "Telegram", "WhatsApp", "Twilio",
+         "Google Sheets", "Excel", "Airtable", "Notion", "Google Drive", "Dropbox", "Google Calendar", "Shopify",
+         "WooCommerce", "Stripe", "PayPal", "HubSpot", "Salesforce", "Pipedrive", "Zendesk", "Jira", "Trello",
+         "Asana", "GitHub", "GitLab", "Typeform", "Google Forms", "Calendly", "Mailchimp", "OpenAI", "Postgres",
+         "MySQL")
+KNOWN_APPS = {app.lower(): app for app in _APPS} | {
+    "google mail": "Gmail", "ms teams": "Microsoft Teams", "whats app": "WhatsApp", "postgresql": "Postgres",
+    "chatgpt": "OpenAI",
+}
 # Kinds whose value must be the user's own words, not a rewording: names, channels, addresses.
 LITERAL_KINDS = frozenset({"text", "channel", "email", "email_list", "url"})
 # Names the planner may give a condition's parameters; anything else is taken as the field ("amount").
@@ -53,8 +75,8 @@ SENTENCE_WORDS = frozenset({"the", "a", "an", "to", "and", "or", "for", "of", "w
 CONDITION_NOISE = frozenset({"check", "checks", "condition", "if", "field", "value", "to", "compare", "with", "the",
                              "is", "whether", "data", "of", "n"})
 CONDITION_LABELS = {FIELD: "Field to check", OPERATOR: "Comparison", VALUE: "Value to compare with"}
-PLACEHOLDER_TRIGGER = Step(id="trigger", kind="trigger", operation="Start the workflow")
-PLACEHOLDER_ACTION = Step(id="action", kind="action", operation="Do something with the result")
+PLACEHOLDER_TRIGGER = Step(id="trigger", kind="trigger", operation=TRIGGER_PLACEHOLDER)
+PLACEHOLDER_ACTION = Step(id="action", kind="action", operation=ACTION_PLACEHOLDER)
 
 
 def is_placeholder(step: Step) -> bool:
@@ -68,8 +90,9 @@ def merge_turn(state: WorkflowState, plan: TurnPlan | None) -> WorkflowState:
     if plan is not None:
         if plan.workflow_name:
             new.name = plan.workflow_name.strip() or new.name
-        if plan.steps:
-            new.steps = merger.steps(plan.steps)
+        planned = [s for s in plan.steps if not _is_empty_step(s)]
+        if planned:
+            new.steps = merger.steps(planned)
     merger.apply_picked()
     merger.apply_stated_conditions()
     asks_about_a_step = plan is not None and plan.next_question is not None and not plan.next_question.target.startswith(GOAL)
@@ -113,7 +136,10 @@ class _Merger:
         app = self._app(step_id, item, old)
         trigger = item.kind == "trigger"
         after = [] if trigger else list(dict.fromkeys(s for s in (_slug(a) for a in item.after) if s and s != step_id))
-        step = Step(id=step_id, kind=item.kind, app=app, operation=item.operation.strip() or "Step",
+        operation = item.operation.strip() or "Step"
+        if operation in PLACEHOLDER_OPERATIONS and old and old.operation not in PLACEHOLDER_OPERATIONS:
+            operation = old.operation  # the planner copied a placeholder back: keep what the step already does
+        step = Step(id=step_id, kind=item.kind, app=app, operation=operation,
                     after=after, branch=None if trigger else item.branch)
         names: set[str] = set()
         params = _condition_params(item.params) if item.kind == "condition" else item.params
@@ -145,7 +171,11 @@ class _Merger:
             return proposed
         if proposed:
             self.log(key, "ignored", f'"{proposed}" was not named by the user')
-        return None
+            return None
+        inferred = _app_from_plan(item.app_evidence, step_id, self.user_text)
+        if inferred:
+            self.changed(key, "App", inferred, overwritten=False, announce=False)
+        return inferred
 
     def _param(self, step_id: str, planned: PlannedParam, old: Param | None) -> Param:
         key = f"{step_id}.{_slug(planned.name)}"
@@ -213,6 +243,8 @@ class _Merger:
             typed = self.state.latest_user_message.strip()
             if param is not None and param.kind == "field" and param.value is None and typed and " " not in typed:
                 picked = typed
+        if not picked and asked_step is not None and asked_step.needs_operation:
+            picked = typed_operation_answer(self.state)  # the planner kept the placeholder: use the user's words
         if not picked or not target or "." not in target:
             return
         step_id, name = target.split(".", 1)
@@ -220,9 +252,15 @@ class _Merger:
         if step is None:
             return
         if name == APP:
-            if (step.app or "").lower() != picked.lower():
-                self.changed(target, "Trigger" if step.kind == "trigger" else "App", picked, overwritten=bool(step.app))
-                step.app = picked
+            app = _picked_app(picked)
+            if app and (step.app or "").lower() != app.lower():
+                self.changed(target, "Trigger" if step.kind == "trigger" else "App", app, overwritten=bool(step.app))
+                step.app = app
+            return
+        if name == OPERATION:
+            if step.needs_operation:
+                self.changed(target, "Operation", picked, overwritten=False)
+                step.operation = picked
             return
         param = step.param(name)
         if param is None:
@@ -287,13 +325,38 @@ def typed_app_answer(state: WorkflowState) -> str | None:
     chat = state.plan is not None and state.plan.message_kind in ("other", "question", "new_request")
     if step is None or state.picked or chat or "?" in typed:  # "thanks" is not an app
         return None
-    name = APP_ANSWER_PREFIX.sub("", typed)
+    return _app_name(typed)
+
+
+def _app_name(text: str) -> str | None:
+    """`text` as an app name ("Square", "app is Zoho", "My Restaurant app"); None for a sentence or a vague reply."""
+    name = APP_ANSWER_PREFIX.sub("", text.strip())
     name = re.sub(r"\s+(?:app|application)$", "", name, flags=re.IGNORECASE).strip(" .!\"'")
     words = plain(name).split()
     if (not words or len(words) > 4 or plain(name) in VAGUE or words[0] in NOT_AN_APP
             or SENTENCE_WORDS & set(words) or not re.search(r"[a-z]", words[0])):
         return None
     return name
+
+
+def _picked_app(picked: str) -> str | None:
+    """The app an option picked for an app question stands for. The planner sometimes offers descriptions
+    ("When I upload a PDF to Dropbox") rather than app names: such a pick is the one known app it names, or nothing,
+    so the whole sentence never becomes the app (session 9f24e830)."""
+    name = _app_name(picked)
+    if name:
+        return name
+    apps = {app for alias, app in KNOWN_APPS.items() if _has_words(_words(alias), picked, plurals=True)}
+    return apps.pop() if len(apps) == 1 else None
+
+
+def typed_operation_answer(state: WorkflowState) -> str | None:
+    """What the user typed when a step's operation was asked ("Create a document"); not a question or chat."""
+    typed = state.latest_user_message.strip().strip(" .!\"'")
+    chat = state.plan is not None and state.plan.message_kind in ("other", "question", "new_request")
+    if not typed or chat or "?" in typed or len(typed.split()) > 8:
+        return None
+    return typed[:1].upper() + typed[1:]
 
 
 def _condition_slot(planned: PlannedParam) -> str | None:
@@ -373,6 +436,27 @@ def _has_words(words: list[str], text: str, plurals: bool = False) -> bool:
 def _grounded(evidence: str | None, text: str) -> bool:
     """Every word of the evidence is a word the user wrote."""
     return bool(evidence and evidence.strip()) and _has_words(_words(evidence), text)
+
+
+def _app_from_plan(evidence: str | None, step_id: str, text: str) -> str | None:
+    """The app of a step the planner left without one, when its evidence or else its id names exactly one known
+    app and the user named that app too: app null with evidence "Gmail", or a step "gmail_trigger", after the
+    user said "Gmail". Evidence like "Email" names no app, so the user is still asked."""
+    for source in (evidence, step_id):
+        if not source:
+            continue
+        apps = {app for name, app in KNOWN_APPS.items()
+                if _has_words(_words(name), source, plurals=True) and _mentioned(name, text)}
+        if len(apps) == 1:
+            return apps.pop()
+    return None
+
+
+def _is_empty_step(item: PlannedStep) -> bool:
+    """A step the planner returned with nothing in it: no app, no evidence, no parameters and no real operation
+    (gpt-oss-20b once sent {"id": "next_step", "operation": "?"}). Code adds its own placeholder if one is needed."""
+    return (item.kind != "trigger" and not (item.app or "").strip() and not (item.app_evidence or "").strip()
+            and not item.params and not re.search(r"[^\W\d_]", item.operation))
 
 
 def _app_named(app: str, evidence: str | None, text: str) -> bool:

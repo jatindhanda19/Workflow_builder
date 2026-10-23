@@ -1,40 +1,84 @@
-import os
+"""The HTTP API. Every session endpoint needs a signed-in user (Bearer token from /auth/login), and a session is
+only ever visible to the user who created it."""
+
+import logging
+import re
 import time
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from functools import lru_cache
-from typing import Any
+from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import Message as ASGIMessage
 
-from app.core.config import ConfigError, load_settings
+from app.core.config import ConfigError, cors_origins, load_settings, log_level
 from app.core.llm import build_llm
+from app.core.logging import configure_logging, request_id
 from app.core.turnlog import log_turn
 from app.pipeline.diagram.mermaid import to_mermaid
 from app.pipeline.graph import build_graph, run_turn
 from app.pipeline.planner_schema import ParamKind, StepKind
 from app.pipeline.validation import display, is_ready, rows
 from app.runtime import RunError, run_workflow
+from app.security.auth import (
+    AuthError,
+    authenticate_user,
+    create_access_token,
+    get_current_user,
+    init_auth_db,
+    register_user,
+    validate_secret,
+)
 from app.state.machine import new_workflow, previous_reasons
 from app.state.models import FieldValue, Message, Mode, PreviousReason, ReplyParts, WorkflowState
 from app.state.store import SessionStore
 
-DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+configure_logging(log_level())
+logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Workflow Builder")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",") if o.strip()],
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type"],
-)
+SESSION_ID_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
+REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+MAX_BODY_BYTES = 1024 * 1024  # a chat message is at most 4000 characters; run input is a small JSON object
+NOT_FOUND = "session not found"
+CONFLICT = "This session was changed by another request at the same time. Reload it and try again."
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # Fail at startup, not on the first request, when auth is misconfigured.
+    validate_secret()
+    init_auth_db()
+    yield
+
+
+app = FastAPI(title="Flowwright", lifespan=lifespan)
 store = SessionStore()
 
 
+class Credentials(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class UserView(BaseModel):
+    id: str
+    email: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserView
+
+
 class ChatRequest(BaseModel):
-    session_id: str | None = None
+    session_id: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)
     message: str = Field(min_length=1, max_length=4000)
 
 
@@ -108,6 +152,14 @@ class SessionView(ChatResponse):
     messages: list[Message]
 
 
+class SessionSummaryView(BaseModel):
+    id: str
+    title: str  # the workflow's name, or the start of the first message
+    mode: Mode
+    generated: bool  # a workflow has been generated in this session
+    updated_at: str
+
+
 class RunRequest(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict)  # the trigger's data, e.g. a webhook body
 
@@ -122,6 +174,10 @@ class StepRunView(BaseModel):
 
 class RunResponse(BaseModel):
     steps: list[StepRunView]
+
+
+CurrentUser = Annotated[dict, Depends(get_current_user)]
+SessionId = Annotated[str, Path(pattern=SESSION_ID_PATTERN)]
 
 
 @lru_cache
@@ -200,54 +256,107 @@ def _question_view(state: WorkflowState) -> QuestionView | None:
                         allow_custom=question.allow_custom, step=question.step, note=question.note)
 
 
+def _owned_state(session_id: str, user: dict) -> WorkflowState:
+    """The user's session; 404 if it does not exist or belongs to someone else (the two look the same)."""
+    state = store.get(session_id, owner_id=user["id"])
+    if state is None:
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    return state
+
+
+# -- health ---------------------------------------------------------------------------------------------------
 @app.get("/health")
 def health() -> dict[str, str]:
+    """Liveness: the process is up."""
     return {"status": "ok"}
 
 
+@app.get("/ready")
+def ready() -> dict[str, str]:
+    """Readiness: the session database answers and the LLM is configured."""
+    try:
+        store.ping()
+        load_settings()
+    except Exception as exc:  # noqa: BLE001 - any failure means "not ready"
+        logger.warning("not ready: %s", exc)
+        raise HTTPException(status_code=503, detail="not ready") from exc
+    return {"status": "ready"}
+
+
+# -- auth -----------------------------------------------------------------------------------------------------
+@app.post("/auth/register", response_model=UserView, status_code=status.HTTP_201_CREATED)
+def register(credentials: Credentials) -> dict:
+    try:
+        return register_user(credentials.email, credentials.password)
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login(credentials: Credentials) -> dict:
+    user = authenticate_user(credentials.email, credentials.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Incorrect email or password.",
+                            headers={"WWW-Authenticate": "Bearer"})
+    return {"access_token": create_access_token(user["id"]), "user": user}
+
+
+@app.get("/auth/me", response_model=UserView)
+def me(user: CurrentUser) -> dict:
+    return user
+
+
+# -- sessions -------------------------------------------------------------------------------------------------
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest, graph=Depends(get_graph)) -> dict:
+def chat(request: ChatRequest, user: CurrentUser, graph=Depends(get_graph)) -> dict:
     session_id = request.session_id or uuid4().hex
-    before = store.get(session_id) or WorkflowState()
+    stored = store.load(session_id, owner_id=user["id"])
+    if stored is None and store.exists(session_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)  # someone else's session: never touch it
+    before = (stored.state if stored else None) or WorkflowState()
     started = time.perf_counter()
     state = run_turn(graph, before, request.message)
+    if not store.save(session_id, state, owner_id=user["id"], expected_version=stored.version if stored else 0):
+        raise HTTPException(status_code=409, detail=CONFLICT)
     log_turn(session_id, before, state, round((time.perf_counter() - started) * 1000))
-    store.save(session_id, state)
     return _summary(session_id, state)
 
 
+@app.get("/sessions", response_model=list[SessionSummaryView])
+def list_sessions(user: CurrentUser, limit: Annotated[int, Query(ge=1, le=200)] = 100) -> list[dict]:
+    """The signed-in user's sessions, most recently changed first."""
+    return [asdict(s) for s in store.list_sessions(user["id"], limit=limit)]
+
+
 @app.get("/sessions/{session_id}", response_model=SessionView)
-def get_session(session_id: str) -> dict:
-    state = store.get(session_id)
-    if state is None:
-        raise HTTPException(status_code=404, detail="session not found")
+def get_session(session_id: SessionId, user: CurrentUser) -> dict:
+    state = _owned_state(session_id, user)
     return {**_summary(session_id, state), "messages": _messages(state)}
 
 
 @app.post("/sessions/{session_id}/new", response_model=SessionView)
-def new_session_workflow(session_id: str) -> dict:
+def new_session_workflow(session_id: SessionId, user: CurrentUser) -> dict:
     """Starts a new workflow in the same session, without the LLM: a generated workflow is kept under previous
     workflows; the unfinished draft and the chat are cleared."""
-    state = store.get(session_id)
-    if state is None:
-        raise HTTPException(status_code=404, detail="session not found")
-    state = new_workflow(state)
-    store.save(session_id, state)
+    stored = store.load(session_id, owner_id=user["id"])
+    if stored is None or stored.state is None:
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    state = new_workflow(stored.state)
+    if not store.save(session_id, state, owner_id=user["id"], expected_version=stored.version):
+        raise HTTPException(status_code=409, detail=CONFLICT)
     return {**_summary(session_id, state), "messages": _messages(state)}
 
 
 @app.delete("/sessions/{session_id}", status_code=204)
-def delete_session(session_id: str) -> None:
-    if not store.delete(session_id):
-        raise HTTPException(status_code=404, detail="session not found")
+def delete_session(session_id: SessionId, user: CurrentUser) -> None:
+    if not store.delete(session_id, owner_id=user["id"]):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
 
 
 @app.post("/sessions/{session_id}/run", response_model=RunResponse)
-def run(session_id: str, request: RunRequest) -> dict:
+def run(session_id: SessionId, request: RunRequest, user: CurrentUser) -> dict:
     """Runs the session's generated workflow for real (see app/runtime/executor.py)."""
-    state = store.get(session_id)
-    if state is None:
-        raise HTTPException(status_code=404, detail="session not found")
+    state = _owned_state(session_id, user)
     if state.workflow is None:
         raise HTTPException(status_code=409, detail="no workflow has been generated yet")
     try:
@@ -255,3 +364,77 @@ def run(session_id: str, request: RunRequest) -> dict:
     except RunError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"steps": [asdict(r) for r in results]}
+
+
+# -- middleware -----------------------------------------------------------------------------------------------
+class _BodyTooLarge(HTTPException):
+    # An HTTPException, so FastAPI passes it on as 413 when it is raised while the endpoint reads the body.
+    def __init__(self) -> None:
+        super().__init__(status_code=413, detail="Request body is too large.")
+
+
+class RequestContextMiddleware:
+    """For every HTTP request:
+    - gives it an id (the caller's X-Request-ID if it is safe, else a new one), returned in the X-Request-ID
+      header and added to every log line;
+    - refuses a body over `max_body_bytes` with 413;
+    - turns an unhandled error into a generic 500 that carries the request id, with the stack trace logged.
+    """
+
+    def __init__(self, app: ASGIApp, max_body_bytes: int = MAX_BODY_BYTES) -> None:
+        self.app, self.max_body_bytes = app, max_body_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = dict(scope["headers"])
+        incoming = headers.get(b"x-request-id", b"").decode("latin-1")
+        rid = incoming if REQUEST_ID.fullmatch(incoming) else uuid4().hex[:16]
+        token = request_id.set(rid)
+        started, received = False, 0
+
+        async def send_with_id(message: ASGIMessage) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+                message["headers"] = [*message.get("headers", []), (b"x-request-id", rid.encode())]
+            await send(message)
+
+        async def limited_receive() -> ASGIMessage:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_body_bytes:
+                    raise _BodyTooLarge
+            return message
+
+        try:
+            length = headers.get(b"content-length", b"0")
+            if not length.isdigit() or int(length) > self.max_body_bytes:
+                raise _BodyTooLarge
+            await self.app(scope, limited_receive, send_with_id)
+        except _BodyTooLarge:
+            if started:
+                raise
+            await JSONResponse(status_code=413, content={"detail": _BodyTooLarge().detail})(scope, receive, send_with_id)
+        except Exception:
+            logger.exception("unhandled error on %s %s", scope.get("method"), scope.get("path"))
+            if started:
+                raise
+            await JSONResponse(status_code=500, content={"detail": "Internal server error.", "request_id": rid})(
+                scope, receive, send_with_id)
+        finally:
+            request_id.reset(token)
+
+
+# The last middleware added runs first: CORS wraps everything, so even a 413 or 500 reaches the browser.
+app.add_middleware(RequestContextMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins(),
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
+)

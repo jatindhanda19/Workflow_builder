@@ -42,3 +42,33 @@ def test_unreadable_state_starts_fresh(tmp_path):
     with sqlite3.connect(tmp_path / "sessions.db") as db:
         db.execute("UPDATE sessions SET state = '{\"steps\": 5}'")
     assert store.get("abc123") is None
+
+
+def test_sessions_are_scoped_to_their_owner(tmp_path):
+    store = SessionStore(tmp_path / "sessions.db")
+    assert store.save("abc123", _generated(), owner_id="alice")
+    assert store.get("abc123", owner_id="bob") is None and store.get("abc123") is None
+    assert not store.save("abc123", _generated(), owner_id="bob")  # bob cannot take alice's id
+    assert not store.delete("abc123", owner_id="bob")
+    assert store.exists("abc123") and store.get("abc123", owner_id="alice") is not None
+
+
+def test_save_with_an_old_version_is_refused(tmp_path):
+    store = SessionStore(tmp_path / "sessions.db")
+    assert store.save("abc123", _generated(), owner_id="alice", expected_version=0)  # new: version 1
+    assert not store.save("abc123", _generated(), owner_id="alice", expected_version=0)  # it exists now
+    version = store.load("abc123", owner_id="alice").version
+    assert store.save("abc123", _generated(), owner_id="alice", expected_version=version)
+    assert not store.save("abc123", _generated(), owner_id="alice", expected_version=version)  # changed since
+
+
+def test_a_database_from_before_owners_is_upgraded(tmp_path):
+    path = tmp_path / "sessions.db"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, state TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        db.execute("INSERT INTO sessions VALUES ('old', ?, '2026-01-01T00:00:00+00:00')",
+                   (_generated().model_dump_json(),))
+    store = SessionStore(path)
+    assert store.get("old") is not None  # kept, with no owner: no signed-in user can reach it
+    assert store.get("old", owner_id="alice") is None
+    assert store.save("new", _generated(), owner_id="alice")

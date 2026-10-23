@@ -2,6 +2,7 @@
 endpoint and CORS. The LLM is scripted, so no API key is needed."""
 
 import pytest
+from auth_test_utils import authenticate_test_client
 from fastapi.testclient import TestClient
 from test_clarification import ScriptedLLM
 
@@ -67,7 +68,9 @@ def client(tmp_path, monkeypatch):
         return graph
 
     main.app.dependency_overrides[main.get_graph] = scripted_graph
-    yield TestClient(main.app)
+    client = TestClient(main.app)
+    authenticate_test_client(client)
+    yield client
     main.app.dependency_overrides.clear()
 
 

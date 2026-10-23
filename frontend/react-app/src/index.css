@@ -48,16 +48,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   letter-spacing: -.6px;
 }
 .brand-mark {
+  display: block;
+  flex: 0 0 auto;
   width: 39px;
   height: 39px;
-  display: grid;
-  place-items: center;
-  color: #fff;
-  border-radius: 12px;
-  background: linear-gradient(145deg, #a18bff, #6950d9);
+  border-radius: 23%;  /* matches the icon's own corner radius, so the glow follows its shape */
   box-shadow: 0 5px 22px #7c61e333;
 }
-.brand-light { color: #9993b8; font-weight: 400; }
+.brand-name { color: #f1f0f6; }
+
+/* "Describe it. Validate it. Automate it." — one dot per stage, as in the logo: start node, validated, automated */
+.tagline { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 10px 24px; color: #9d99b6; font: 600 9px/1 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; letter-spacing: 2.2px; text-transform: uppercase; }
+.tagline span { display: inline-flex; align-items: center; gap: 9px; }
+.tagline-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.tagline-dot.describe { box-sizing: border-box; border: 2px solid #e9e7f3; }
+.tagline-dot.validate { background: #4ade80; }
+.tagline-dot.automate { background: #a48cff; }
 
 .auth-layout { min-height: 100vh; display: grid; grid-template-columns: 1.05fr .95fr; }
 .auth-story {
@@ -134,8 +140,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .story-points b, .story-points small { display: block; }
 .story-points b { font-size: 12px; font-weight: 600; }
 .story-points small { margin-top: 5px; color: var(--muted); font-size: 11px; }
-.story-footer { color: #656c81; font-size: 9px; letter-spacing: 1.3px; }
-.story-footer span { padding: 0 7px; color: #a995ff; }
 
 .auth-panel { display: grid; place-items: center; padding: 40px 7%; }
 .auth-card { width: 100%; max-width: 420px; }
@@ -204,7 +208,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   background: #0c0e16;
 }
 .sidebar-brand { padding: 0 4px 34px; font-size: 16px; }
-.sidebar-brand .brand-mark { width: 35px; height: 35px; border-radius: 10px; }
+.sidebar-brand .brand-mark { width: 35px; height: 35px; }
 .sidebar-label { margin: 0 8px 13px; color: #6f778b; font-size: 9px; font-weight: 700; letter-spacing: 1.5px; }
 .new-workflow-button {
   display: flex;
@@ -226,6 +230,13 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .sidebar-card-icon { display: grid; place-items: center; width: 32px; height: 32px; color: #a995ff; border-radius: 8px; background: #9b83ff16; }
 .sidebar-card b { font-size: 10px; }
 .sidebar-card p { margin: 6px 0 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.session-list { display: flex; flex-direction: column; gap: 3px; flex: 1; min-height: 0; margin: 24px 0 14px; overflow-y: auto; }
+.session-item { display: flex; flex-direction: column; gap: 4px; width: 100%; padding: 9px 10px; color: #c9cddb; border: 1px solid transparent; border-radius: 8px; background: transparent; text-align: left; transition: background .2s, border-color .2s; }
+.session-item:hover:not(:disabled) { background: #141824; }
+.session-item.active { border-color: #8f7be34d; background: #8f7be311; color: var(--text); }
+.session-item:disabled { cursor: default; opacity: .6; }
+.session-title { overflow: hidden; font-size: 11px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.session-item small { color: #6f778b; font-size: 9px; }
 .sidebar-bottom { margin-top: auto; }
 .connection-status { display: flex; align-items: center; gap: 8px; padding: 12px 5px; color: #9299ac; font-size: 10px; }
 .session-reference { padding: 0 5px 14px; color: #686f83; font-size: 9px; }
@@ -301,6 +312,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .typing-indicator i:nth-child(3) { animation-delay: .3s; }
 @keyframes bounce { 0%, 60%, 100% { transform: translateY(0); opacity: .45; } 30% { transform: translateY(-4px); opacity: 1; } }
 
+.answer-options { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 16px 12px; }
+.answer-option { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; color: #e2e5f1; border: 1px solid #292e40; border-radius: 8px; background: #141722; font-size: 11px; text-align: left; transition: border-color .2s, background .2s; }
+.answer-option:hover { border-color: #8975e7; background: #1a1b2a; }
+.answer-option > span { display: inline-grid; place-items: center; width: 18px; height: 18px; color: var(--purple-bright); border: 1px solid #8f7be34d; border-radius: 5px; font-size: 9px; font-weight: 700; }
 .composer { margin: auto 16px 0; padding: 13px; border: 1px solid #333146; border-radius: 12px; background: #141722; transition: border-color .2s; }
 .composer:focus-within { border-color: #8976e5; }
 .composer textarea { display: block; width: 100%; min-height: 43px; max-height: 150px; resize: vertical; padding: 5px 4px 12px; color: #e6e8f2; border: 0; outline: 0; background: transparent; font-size: 12px; line-height: 1.7; }
@@ -347,6 +362,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .inspector-footer { display: flex; align-items: center; gap: 7px; padding: 11px 14px; color: #7e879b; border-top: 1px solid #232736; background: #0d1018; font-size: 9px; }
 .inspector-footer svg { color: #78dcb2; }
 .diagram-code { max-height: 260px; color: #aeb5ca; }
+.diagram-render { max-height: 420px; padding: 16px 12px; overflow: auto; background: #0c0e16; text-align: center; }
+.diagram-render svg { max-width: 100%; height: auto; }
+.diagram-loading { padding: 28px 12px; color: #777f94; background: #0c0e16; font-size: 10px; text-align: center; }
 .diagram-empty { padding: 18px 12px 17px; text-align: center; }
 .diagram-placeholder { display: flex; flex-direction: column; align-items: center; }
 .diagram-node { display: grid; place-items: center; width: 130px; min-height: 31px; color: #d4cbff; border: 1px solid #9581ff4a; border-radius: 7px; background: #9c85ff12; font-size: 9px; }
@@ -395,7 +413,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   .auth-card { max-width: 440px; }
   .sidebar { width: 67px; align-items: center; padding: 17px 8px 12px; }
   .sidebar-brand { padding: 0 0 29px; }
-  .sidebar-brand > span, .sidebar-label, .new-workflow-button:not(:focus), .sidebar-card, .connection-status, .session-reference, .user-info, .logout-button { display: none; }
+  .sidebar-brand > span, .sidebar-label, .new-workflow-button:not(:focus), .sidebar-card, .session-list, .connection-status, .session-reference, .user-info, .logout-button { display: none; }
   .new-workflow-button { justify-content: center; padding: 12px 0; font-size: 0; }
   .new-workflow-button svg { width: 20px; height: 20px; }
   .sidebar-bottom { width: 100%; }

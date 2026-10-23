@@ -8,6 +8,11 @@ before anything is executed, so a workflow is never half run.
 
 Secrets come only from environment variables. Workflow parameters come from the chat, so they never hold one,
 and a secret is never put in a step's output or error.
+
+HTTP Request URLs come from the chat, so they are checked before any call: http(s) only, no credentials in the
+URL, and no private, loopback or link-local destination (the cloud metadata service, localhost, the internal
+network), also when a public name resolves to one. Redirects are not followed, so a public URL cannot bounce
+the request to an internal one.
 """
 
 import json
@@ -16,11 +21,13 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
+from urllib.parse import urlsplit
 
 import requests
 
 from app.pipeline.generation.schema import Edge, Workflow, WorkflowNode
 from app.pipeline.normalize import ORDERING_OPERATORS, UNARY_OPERATORS
+from app.security.runtime_guardrails import sanitize_runtime_text, validate_http_url, validate_resolved_host
 
 SLACK_WEBHOOK_ENV = "SLACK_WEBHOOK_URL"
 TIMEOUT_SECONDS = 10
@@ -42,6 +49,23 @@ class StepError(RuntimeError):
     """One step failed; the steps after it are not run."""
 
 
+class BlockedDestination(requests.RequestException):
+    """The request was not sent: its URL points to a private or non-public address."""
+
+
+def safe_request(method: str, url: str, **kwargs: Any) -> requests.Response:
+    """requests.request that refuses non-public destinations and does not follow redirects."""
+    for check in (validate_http_url(url), _public_destination(url)):
+        if not check.allowed:
+            raise BlockedDestination(check.reason)
+    return requests.request(method, url, allow_redirects=False, **kwargs)
+
+
+def _public_destination(url: str):
+    parsed = urlsplit(url.strip())
+    return validate_resolved_host(parsed.hostname or "", parsed.port)
+
+
 @dataclass
 class StepResult:
     id: str
@@ -56,7 +80,7 @@ def unsupported(workflow: Workflow) -> list[str]:
     return [node.name for node in workflow.nodes if _kind(node) is None]
 
 
-def run_workflow(workflow: Workflow, data: dict[str, Any] | None = None, send: Send = requests.request,
+def run_workflow(workflow: Workflow, data: dict[str, Any] | None = None, send: Send = safe_request,
                  env: Mapping[str, str] = os.environ) -> list[StepResult]:
     """Runs every reachable step in order. A step runs when an edge into it is active: its source ran, and
     for a condition, the edge's branch is the condition's result. Other steps are reported as skipped."""
@@ -69,6 +93,7 @@ def run_workflow(workflow: Workflow, data: dict[str, Any] | None = None, send: S
         incoming[edge.target].append(edge)
     outputs: dict[str, Any] = {}  # data of every step that ran, by step id
     results: list[StepResult] = []
+    secrets = (env.get(SLACK_WEBHOOK_ENV, "").strip(),)
     trigger = workflow.nodes[0]
     for node in workflow.nodes:
         if node.type == "end":
@@ -80,7 +105,8 @@ def run_workflow(workflow: Workflow, data: dict[str, Any] | None = None, send: S
             outputs[node.id] = _run_step(node, data or {}, outputs, trigger.id, send, env)
             results.append(StepResult(node.id, node.name, "ok", outputs[node.id]))
         except StepError as exc:
-            results.append(StepResult(node.id, node.name, "failed", error=str(exc)))
+            # Errors are shown to the user: no secret, no personal data echoed back by a remote service.
+            results.append(StepResult(node.id, node.name, "failed", error=sanitize_runtime_text(str(exc), secrets)))
     return results
 
 
@@ -133,8 +159,9 @@ def _condition(params: dict, outputs: dict, trigger_id: str) -> dict:
 
 def _http(params: dict, outputs: dict, trigger_id: str, send: Send) -> dict:
     url = _render(_first(params, URL_KEYS), outputs, trigger_id)
-    if not isinstance(url, str) or not re.match(r"https?://", url):
-        raise StepError(f"the URL {url!r} is not an http(s) URL")
+    check = validate_http_url(url)
+    if not check.allowed:
+        raise StepError(f"the URL {url!r} cannot be called: {check.reason}")
     body = _render(_first(params, BODY_KEYS), outputs, trigger_id)
     method = str(params.get("method") or ("POST" if body is not None else "GET")).upper()
     if isinstance(body, str):

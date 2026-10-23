@@ -3,9 +3,13 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
+# Read .env once, before any module reads a setting. Variables already set in the environment win.
+load_dotenv()
+
 DEFAULT_MODEL = "openai/gpt-oss-120b"
 # Groq limits each model separately, so when the main model is rate limited this one keeps working.
 DEFAULT_FALLBACK_MODEL = "openai/gpt-oss-20b"
+DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 
 
 class ConfigError(RuntimeError):
@@ -38,3 +42,12 @@ def load_settings() -> Settings:
         temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
         reasoning_effort=None if reasoning == "none" else reasoning,
     )
+
+
+def cors_origins() -> list[str]:
+    """Browser origins allowed to call the API, from CORS_ORIGINS (comma-separated)."""
+    return [o.strip() for o in os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",") if o.strip()]
+
+
+def log_level() -> str:
+    return os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO"

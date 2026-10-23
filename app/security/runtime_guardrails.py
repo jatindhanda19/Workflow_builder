@@ -6,8 +6,9 @@ These checks complement, rather than replace, the runtime executor.
 """
 
 import ipaddress
-import re
+import socket
 from dataclasses import dataclass
+from typing import Callable
 from urllib.parse import urlsplit
 
 from app.security.pii import redact_pii
@@ -89,6 +90,35 @@ def validate_http_url(url: str) -> RuntimeGuardrailResult:
         return RuntimeGuardrailResult(
             False, "The URL is malformed."
         )
+
+    return RuntimeGuardrailResult(True)
+
+
+def validate_resolved_host(
+    hostname: str,
+    port: int | None,
+    resolve: Callable[..., list] | None = None,
+) -> RuntimeGuardrailResult:
+    """
+    Reject a hostname that resolves to a private, loopback, link-local
+    or otherwise non-public address, e.g. a public name pointing at
+    127.0.0.1 or the cloud metadata service at 169.254.169.254.
+
+    A name that does not resolve is allowed: the request then fails
+    on its own, without reaching anything.
+    """
+
+    try:
+        infos = (resolve or socket.getaddrinfo)(hostname, port or 443, proto=socket.IPPROTO_TCP)
+    except (OSError, UnicodeError):
+        return RuntimeGuardrailResult(True)
+
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0].split("%")[0])
+        if not address.is_global:
+            return RuntimeGuardrailResult(
+                False, "The URL points to a private or non-public address."
+            )
 
     return RuntimeGuardrailResult(True)
 

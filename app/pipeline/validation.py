@@ -20,7 +20,7 @@ from app.pipeline.normalize import (
     split_list,
     twelve_hour,
 )
-from app.state.models import APP, FieldValue, Param, Step, WorkflowState
+from app.state.models import APP, OPERATION, FieldValue, Param, Step, WorkflowState
 
 VAGUE = frozenset({
     "it", "that", "this", "something", "stuff", "whatever", "anything", "idk", "not sure", "the thing",
@@ -49,9 +49,13 @@ class Verdict:
 
 @dataclass(frozen=True)
 class OpenItem:
-    key: str  # "<step id>.<param>" or "<step id>.app"
+    key: str  # "<step id>.<param>", "<step id>.app" or "<step id>.operation"
     step: Step
-    param: Param | None  # None: the step's app is missing
+    param: Param | None  # None: the step's app or operation is missing (see is_operation)
+
+    @property
+    def is_operation(self) -> bool:
+        return self.key.endswith(f".{OPERATION}") and self.param is None
 
 
 @dataclass(frozen=True)
@@ -90,11 +94,14 @@ def display(param: Param | None, value: FieldValue | None) -> str:
 
 
 def open_items(state: WorkflowState) -> list[OpenItem]:
-    """Everything still missing, in workflow order: each step's app first, then its required parameters."""
+    """Everything still missing, in workflow order: each step's app first, then what it does in that app (while
+    that is still a placeholder), then its required parameters."""
     items: list[OpenItem] = []
     for step in state.steps:
         if not step.app:
             items.append(OpenItem(f"{step.id}.{APP}", step, None))
+        elif step.needs_operation:
+            items.append(OpenItem(f"{step.id}.{OPERATION}", step, None))
         items += [OpenItem(f"{step.id}.{p.name}", step, p) for p in step.params if p.required and p.value is None]
     return items
 

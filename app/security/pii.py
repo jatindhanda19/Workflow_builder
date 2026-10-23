@@ -41,9 +41,14 @@ PATTERNS = {
 }
 
 
-def detect_pii(text: str) -> list[PIIEntity]:
+# Identity numbers: never a workflow parameter, so they can be removed before text reaches the LLM.
+# Emails and phone numbers are kept there, because a workflow may need them ("email me at ...").
+ID_NUMBERS = frozenset({"AADHAAR_LIKE", "PAN_LIKE"})
+
+
+def detect_pii(text: str, types: frozenset[str] | None = None) -> list[PIIEntity]:
     """
-    Detect supported PII patterns in text.
+    Detect supported PII patterns in text, or only those in `types`.
 
     Returns entity types and character positions, not the actual values.
     """
@@ -53,6 +58,8 @@ def detect_pii(text: str) -> list[PIIEntity]:
     entities = []
 
     for entity_type, pattern in PATTERNS.items():
+        if types is not None and entity_type not in types:
+            continue
         for match in pattern.finditer(text):
             entities.append(
                 PIIEntity(
@@ -76,16 +83,16 @@ def detect_pii(text: str) -> list[PIIEntity]:
     return non_overlapping
 
 
-def redact_pii(text: str) -> str:
+def redact_pii(text: str, types: frozenset[str] | None = None) -> str:
     """
-    Replace detected PII with type-labelled placeholders.
+    Replace detected PII (or only the types in `types`) with type-labelled placeholders.
 
     Example:
         Contact me at user@example.com
         ->
         Contact me at [EMAIL]
     """
-    entities = detect_pii(text)
+    entities = detect_pii(text, types)
 
     for entity in reversed(entities):
         placeholder = f"[{entity.entity_type}]"

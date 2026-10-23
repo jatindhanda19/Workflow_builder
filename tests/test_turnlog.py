@@ -2,6 +2,7 @@
 
 import json
 
+from auth_test_utils import authenticate_test_client
 from fastapi.testclient import TestClient
 from test_clarification import ScriptedLLM, _run
 
@@ -50,6 +51,7 @@ def test_chat_endpoint_logs_one_line_per_turn(tmp_path, monkeypatch):
     main.app.dependency_overrides[main.get_graph] = lambda: graph
     try:
         client = TestClient(main.app)
+        authenticate_test_client(client)
         session = client.post("/chat", json={"message": REQUEST}).json()["session_id"]
         client.post("/chat", json={"session_id": session, "message": "thanks"})
     finally:
@@ -57,3 +59,14 @@ def test_chat_endpoint_logs_one_line_per_turn(tmp_path, monkeypatch):
     records = [json.loads(line) for line in lines]
     assert [r["turn"] for r in records] == [1, 2] and all(r["session"] == session for r in records)
     assert records[1]["kept"] == [] and records[1]["message_kind"] == "other"
+
+
+def test_logged_values_hold_no_personal_data():
+    before = WorkflowState()
+    plan = TurnPlan(message_kind="build", steps=[
+        PlannedStep(id="send", kind="action", app="Gmail", app_evidence="Gmail", operation="Send email", params=[
+            PlannedParam(name="to", label="To", kind="email", value="jane@example.com", evidence="jane@example.com")]),
+    ])
+    after = _run(before, "Email jane@example.com with Gmail", plan)
+    line = json.dumps(turn_record("s1", before, after, latency_ms=1))
+    assert "jane@example.com" not in line and "[EMAIL]" in line
