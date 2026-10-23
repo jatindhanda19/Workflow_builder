@@ -1,5 +1,7 @@
 # Secrets
 .env
+.env.local
+*.env.local
 
 # Python
 __pycache__/
@@ -11,7 +13,13 @@ __pycache__/
 .sessions/
 sessions.db*
 auth.db*
+*.log
 
 # Frontend: installed and built locally (npm install, npm run build)
 node_modules/
 frontend/react-app/dist/
+
+# Editors and OS
+.idea/
+.DS_Store
+Thumbs.db
