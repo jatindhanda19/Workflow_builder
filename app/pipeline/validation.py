@@ -186,26 +186,35 @@ def structure_errors(state: WorkflowState) -> list[str]:
 
 
 def condition_text(step: Step) -> str:
-    """E.g. "invoice.amount is greater than 100000", or "customer.email is empty"."""
-    field, operator, value = (step.param(n) for n in (FIELD, OPERATOR, VALUE))
+    """E.g. "invoice.amount is greater than 100000", "customer.email is empty", or several comparisons joined
+    with "and" / "or"."""
+    parts = [_comparison_text(step, i) for i in step.comparison_indexes()]
+    return f" {step.combinator} ".join(parts) if all(parts) else f'"{step.operation}"'
+
+
+def _comparison_text(step: Step, index: int) -> str | None:
+    field, operator, value = step.comparison(index)
     if field and operator and None not in (field.value, operator.value):
         if operator.value in UNARY_OPERATORS:
             return f"{display(field, field.value)} {display(operator, operator.value)}"
         if value and value.value is not None:
             return f"{display(field, field.value)} is {display(operator, operator.value)} {display(value, value.value)}"
-    return f'"{step.operation}"'
+    return None
 
 
 def _condition_errors(step: Step) -> list[str]:
-    field, operator, value = (step.param(n) for n in (FIELD, OPERATOR, VALUE))
     errors = []
-    if field is None or operator is None or value is None:
-        return [f'The condition "{step.operation}" needs a field, a comparison and a value. What should it check?']
-    if isinstance(field.value, str) and isinstance(value.value, str) and plain(field.value) == plain(value.value):
-        errors.append(f'The condition "{step.operation}" compares {field.value} with itself. What should it compare with?')
-    if operator.value in ORDERING_OPERATORS and isinstance(value.value, str) and not NUMBER.search(value.value):
-        errors.append(f'The condition "{step.operation}" checks if {display(field, field.value)} is '
-                      f'{display(operator, operator.value)} "{value.value}", which is not a number. Which number should it use?')
+    for index in step.comparison_indexes():
+        field, operator, value = step.comparison(index)
+        if field is None or operator is None or value is None:
+            return [f'The condition "{step.operation}" needs a field, a comparison and a value. What should it check?']
+        if isinstance(field.value, str) and isinstance(value.value, str) and plain(field.value) == plain(value.value):
+            errors.append(f'The condition "{step.operation}" compares {field.value} with itself. '
+                          "What should it compare with?")
+        if operator.value in ORDERING_OPERATORS and isinstance(value.value, str) and not NUMBER.search(value.value):
+            errors.append(f'The condition "{step.operation}" checks if {display(field, field.value)} is '
+                          f'{display(operator, operator.value)} "{value.value}", which is not a number. '
+                          "Which number should it use?")
     return errors
 
 

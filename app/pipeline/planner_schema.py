@@ -37,12 +37,19 @@ class PlannedStep(BaseModel):
     kind: StepKind
     app: str | None = Field(default=None, description="App or built-in node name; null if the user has not said")
     app_evidence: str | None = Field(default=None, description="The exact user words that name or imply the app")
-    operation: str = Field(description="What the step does, e.g. 'New order', 'Send message', 'Append row'")
+    # Null is allowed so a step whose operation is not known yet does not invalidate the whole plan (the operation
+    # is then asked); it is read as "".
+    operation: str | None = Field(description="What the step does, e.g. 'New order', 'Send message', 'Append row'")
     after: list[str] = Field(
         default_factory=list, description="Ids of the earlier steps this step follows; empty = the step just before it")
     branch: Branch | None = Field(
         default=None, description="When it follows a condition: true (condition met) or false (otherwise)")
     params: list[PlannedParam] = Field(default_factory=list)
+
+    @field_validator("operation", mode="before")
+    @classmethod
+    def _null_as_empty(cls, value: object) -> object:
+        return "" if value is None else value
 
     @field_validator("after", mode="before")
     @classmethod

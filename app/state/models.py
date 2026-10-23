@@ -1,3 +1,4 @@
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -15,6 +16,17 @@ OPERATION = "operation"  # pseudo-parameter: what a step does in its app, while 
 TRIGGER_PLACEHOLDER = "Start the workflow"
 ACTION_PLACEHOLDER = "Do something with the result"
 PLACEHOLDER_OPERATIONS = frozenset({TRIGGER_PLACEHOLDER, ACTION_PLACEHOLDER, "Step"})
+# A condition step holds 1-3 comparisons: field / operator / value, then field_2 / operator_2 / value_2, …, and,
+# when there are several, "combinator": "and" (every comparison holds) or "or" (one is enough).
+COMBINATOR = "combinator"
+COMBINATORS = ("and", "or")
+MAX_COMPARISONS = 3
+_COMPARISON_PARAM = re.compile(r"(field|operator|value)_([2-9])")
+
+
+def comparison_name(base: str, index: int) -> str:
+    """The parameter name of a comparison's part: ("field", 1) → "field", ("value", 2) → "value_2"."""
+    return base if index == 1 else f"{base}_{index}"
 
 
 PreviousReason = Literal["edited", "new_workflow"]
@@ -83,20 +95,47 @@ class Step(BaseModel):
     after: list[str] = Field(default_factory=list)  # earlier steps this one follows; empty: the step just before it
     branch: Branch | None = None  # the outcome of the condition it follows: true / false
     params: list[Param] = Field(default_factory=list)
+    # The app catalogue entry its app and operation matched ("slack.send_message"), whose settings it is checked
+    # against. None: an "unverified" step (an app or an operation outside the catalogue), kept as described.
+    catalogue_key: str | None = None
+
+    @property
+    def verified(self) -> bool:
+        return self.catalogue_key is not None
 
     @property
     def title(self) -> str:
         if self.kind == "condition":
-            # "order.total > 50000?" or "customer.email is empty?" once known, rather than the node name "If: If".
-            field, operator, value = (self.param(n) for n in ("field", "operator", "value"))
-            if field and operator and None not in (field.value, operator.value):
-                symbol = OPERATOR_SYMBOLS.get(str(operator.value), operator.value)
-                if operator.value in UNARY_OPERATORS:
-                    return f"{field.value} {symbol}?"
-                if value and value.value is not None:
-                    return f"{field.value} {symbol} {value.value}?"
+            # "order.total > 50000?" or "amount > 500 and customer.vip = yes?" once known, rather than "If: If".
+            parts = [self._comparison_title(i) for i in self.comparison_indexes()]
+            if all(parts):
+                return f" {self.combinator} ".join(parts) + "?"
             return self.operation if self.operation.lower() not in ("if", "condition") else "Check condition"
         return f"{self.app}: {self.operation}" if self.app else self.operation
+
+    def comparison_indexes(self) -> list[int]:
+        """1, 2, …: the comparisons of a condition step (field / operator / value, field_2 / …)."""
+        extra = {int(m.group(2)) for p in self.params if (m := _COMPARISON_PARAM.fullmatch(p.name))}
+        return sorted({1, *extra})
+
+    def comparison(self, index: int) -> tuple[Param | None, Param | None, Param | None]:
+        """The field, operator and value parameters of comparison `index`."""
+        return tuple(self.param(comparison_name(base, index)) for base in ("field", "operator", "value"))  # type: ignore[return-value]
+
+    @property
+    def combinator(self) -> str:
+        """How the comparisons combine: "and" unless the step says "or"."""
+        param = self.param(COMBINATOR)
+        return "or" if param is not None and param.value == "or" else "and"
+
+    def _comparison_title(self, index: int) -> str | None:
+        field, operator, value = self.comparison(index)
+        if not (field and operator and None not in (field.value, operator.value)):
+            return None
+        symbol = OPERATOR_SYMBOLS.get(str(operator.value), operator.value)
+        if operator.value in UNARY_OPERATORS:
+            return f"{field.value} {symbol}"
+        return f"{field.value} {symbol} {value.value}" if value and value.value is not None else None
 
     def param(self, name: str) -> Param | None:
         return next((p for p in self.params if p.name == name), None)

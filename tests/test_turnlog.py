@@ -21,7 +21,7 @@ def _plan():
     return TurnPlan(message_kind="build", next_question=NextQuestion(target="issue_trigger.app", question="Which app?"),
                     steps=[
         PlannedStep(id="issue_trigger", kind="trigger", app="Git", app_evidence="git", operation="New issue"),
-        PlannedStep(id="post", kind="action", app="Slack", app_evidence="Slack", operation="Send message", params=[
+        PlannedStep(id="post", kind="action", app="Slack", app_evidence="Slack", operation="Post digest", params=[
             PlannedParam(name="channel", label="Channel", kind="channel", value="#dev", evidence="#dev"),
             PlannedParam(name="time", label="Time", kind="time", value="evening", evidence="6pm"),
             PlannedParam(name="footer", label="Footer", value="Sent by the bot", evidence="sent by the bot")]),

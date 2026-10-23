@@ -2,6 +2,7 @@
 
 import json
 
+from app.catalogue import prompt_section
 from app.core.llm import LLMCall, StructuredLLM
 from app.pipeline.planner_schema import TurnPlan
 from app.security.pii import ID_NUMBERS, redact_pii
@@ -21,6 +22,7 @@ def build_context(state: WorkflowState) -> str:
     draft = [_draft_step(step) for step in state.steps]
     picked = f'yes, the user picked the option "{state.picked}"' if state.picked else "no, the user typed a reply"
     sections = [
+        f"APP CATALOGUE (verified; settings marked * are required):\n{prompt_section()}",
         f"MODE: {'editing a generated workflow' if state.mode == 'post_generation' else 'collecting'}",
         f"CURRENT DRAFT ({state.name or 'unnamed'}) {DRAFT_DEFAULTS}:\n"
         f"{json.dumps(draft, ensure_ascii=False, separators=(',', ':')) if draft else '(empty)'}",
@@ -34,7 +36,8 @@ def build_context(state: WorkflowState) -> str:
 
 
 def _draft_step(step: Step) -> dict:
-    data = step.model_dump(exclude_none=True, exclude_defaults=True) | {"kind": step.kind}
+    # catalogue_key is code's bookkeeping, not something the planner decides.
+    data = step.model_dump(exclude_none=True, exclude_defaults=True, exclude={"catalogue_key"}) | {"kind": step.kind}
     if step.operation in PLACEHOLDER_OPERATIONS:
         # Shown, the placeholder ("Do something with the result") was copied back as the step's operation.
         data.pop("operation", None)

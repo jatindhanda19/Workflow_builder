@@ -18,6 +18,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
+from app.pipeline.gaps import completeness_gaps
 from app.security.pii import redact_pii
 from app.state.models import WorkflowState
 
@@ -56,6 +57,8 @@ def turn_record(session_id: str, before: WorkflowState, after: WorkflowState, la
         "rejected": [{"field": e.field, "reason": _clean(e.detail)} for e in entries if e.event == "rejected"],
         "ignored": [{"field": e.field, "reason": _clean(e.detail)} for e in entries if e.event == "ignored"],
         "asked": after.target if after.question else None,
+        # What still keeps the workflow from being complete (app/pipeline/gaps.py).
+        "gaps": [_clean(g) for g in completeness_gaps(after)],
         "mode": after.mode,
         "generated": after.workflow is not None and after.workflow != before.workflow,
     }

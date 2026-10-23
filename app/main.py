@@ -26,6 +26,7 @@ from app.pipeline.graph import build_graph, run_turn
 from app.pipeline.planner_schema import ParamKind, StepKind
 from app.pipeline.validation import display, is_ready, rows
 from app.runtime import RunError, run_workflow
+from app.runtime.executor import runner_for
 from app.security.auth import (
     AuthError,
     authenticate_user,
@@ -113,6 +114,9 @@ class StepView(BaseModel):
     operation: str
     title: str
     params: list[ParamView]
+    catalogue_key: str | None  # the app catalogue entry it matched, e.g. "slack.send_message"
+    verified: bool  # its operation and settings are checked against the catalogue
+    executable: bool  # the built-in runner can execute it (else it is planned, not executable here)
 
 
 class QuestionView(BaseModel):
@@ -235,7 +239,9 @@ def _steps(state: WorkflowState) -> list[StepView]:
             for p in step.params if p.value is not None or p.required
         ]
         views.append(StepView(id=step.id, kind=step.kind, app=step.app, operation=step.operation,
-                              title=step.title, params=params))
+                              title=step.title, params=params, catalogue_key=step.catalogue_key,
+                              verified=step.verified,
+                              executable=runner_for(step.app, step.operation, step.kind) is not None))
     return views
 
 

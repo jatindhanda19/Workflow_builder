@@ -7,11 +7,13 @@ really is missing, keeps only options that validate, and builds a plain question
 import re
 import string
 
+from app.catalogue import app_name, default_apps
+from app.pipeline.gaps import reference_problem
 from app.pipeline.merge import is_placeholder
 from app.pipeline.normalize import plain
 from app.pipeline.planner_schema import NextQuestion
 from app.pipeline.validation import OpenItem, display, open_items, validate
-from app.state.models import APP, Question, QuestionOption, WorkflowState
+from app.state.models import APP, COMBINATOR, PLACEHOLDER_OPERATIONS, Question, QuestionOption, WorkflowState
 
 MAX_OPTIONS = 5
 MAX_QUESTION_LENGTH = 300
@@ -39,10 +41,6 @@ DEFAULT_OPTIONS: dict[str, tuple[str, ...]] = {
     "time": ("9:00 AM", "12:00 PM", "6:00 PM"),
     "timezone": ("Asia/Kolkata", "UTC", "Europe/London", "America/New_York"),
 }
-DEFAULT_APPS = {
-    "trigger": ("Schedule", "Webhook", "Gmail", "Google Forms", "Manual"),
-    "action": ("Gmail", "Slack", "Google Sheets", "Microsoft Teams", "HTTP Request"),
-}
 NEW_WORKFLOW_YES = "Yes, start a new workflow"
 NEW_WORKFLOW_NO = "No, keep the current one"
 
@@ -64,6 +62,8 @@ def next_question(state: WorkflowState, predicted: NextQuestion | None) -> tuple
     text = text or _fallback_text(item)
     note = (item.param.note if item.param else None) or (STILL_NEED if state.asked_count(item.key) >= 1 else None)
     options = _options(item, predicted.options if use_ai and predicted else [], state.user_text().lower())
+    # An option that uses data no earlier step provides would only be rejected: it is not offered.
+    options = [o for o in options if reference_problem(state, item.step, o.label) is None]
     choice_only = item.param is not None and item.param.kind == "choice" and bool(item.param.choices)
     return item.key, Question(target=item.key, step=_step_context(state, item), text=text, note=note,
                               options=options, allow_custom=not choice_only)
@@ -128,10 +128,15 @@ def _options(item: OpenItem, suggested: list[str], user_text: str) -> list[Quest
     if item.is_operation:
         return _dedupe([s.strip() for s in suggested if s.strip()])  # the planner's ideas; typing is always allowed
     if param is None:
-        apps = [s.strip() for s in suggested if s.strip()]
+        # Catalogue apps, plus any app the user named themselves; the planner's other ideas are not offered. A step
+        # that is still a placeholder may also get descriptions ("When I upload a PDF to Dropbox"): they help pin
+        # down a vague request, and picking one takes the app it names.
+        undecided = item.step.operation in PLACEHOLDER_OPERATIONS
+        apps = [s.strip() for s in suggested if s.strip() and (
+            app_name(s) or _named(s, user_text) or (undecided and len(s.split()) > 4))]
         if len(apps) < 2:
-            apps += DEFAULT_APPS["trigger" if item.step.kind == "trigger" else "action"]
-        return _dedupe(apps)
+            apps += default_apps("trigger" if item.step.kind == "trigger" else "action")
+        return _dedupe([app_name(a) or a for a in apps])
     if param.kind == "choice" and param.choices:
         # Every choice is listed: a choice parameter accepts nothing else.
         ranked = [c for s in suggested for c in param.choices if plain(c) == plain(s)]
@@ -162,6 +167,12 @@ def _goal_question(predicted: NextQuestion | None) -> Question:
     return Question(target=GOAL_TARGET, text=GOAL_QUESTION, options=[QuestionOption(label=e) for e in GOAL_EXAMPLES])
 
 
+def _named(app: str, user_text: str) -> bool:
+    """Whether the user wrote this app's name (whole words), e.g. "Telegram" in "notify me on telegram"."""
+    words = re.findall(r"[a-z0-9]+", app.lower())
+    return bool(words) and re.search(r"\b" + r"\W+".join(map(re.escape, words)) + r"\b", user_text) is not None
+
+
 def _fallback_text(item: OpenItem) -> str:
     operation = item.step.operation[:1].lower() + item.step.operation[1:]
     if item.is_operation:
@@ -172,6 +183,8 @@ def _fallback_text(item: OpenItem) -> str:
         if item.step.kind == "trigger":
             return f'Which app should I watch for "{operation}"?'
         return f"Which app should I use to {operation}?"
+    if item.param.name == COMBINATOR:
+        return "Should every one of these conditions be true (and), or is one of them enough (or)?"
     hint = f" ({item.param.description.rstrip('.')})" if item.param.description else ""
     return f"What should the {item.param.label.lower()} be{hint}?"
 

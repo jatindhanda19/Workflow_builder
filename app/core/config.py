@@ -25,6 +25,8 @@ class Settings:
     # gpt-oss models think before answering. "low" keeps turns fast and cheap; with more, gpt-oss-20b often spends
     # its whole reply on reasoning and returns no JSON. None: not sent (for models without this setting).
     reasoning_effort: str | None
+    # Groq strict Structured Outputs (LLM_STRICT_OUTPUT, default on): the provider checks the reply against the schema.
+    strict_output: bool = True
 
 
 def load_settings() -> Settings:
@@ -41,6 +43,7 @@ def load_settings() -> Settings:
         fallback_model=None if fallback.lower() in ("none", model.lower()) else fallback,
         temperature=float(os.getenv("LLM_TEMPERATURE", "0")),
         reasoning_effort=None if reasoning == "none" else reasoning,
+        strict_output=os.getenv("LLM_STRICT_OUTPUT", "true").strip().lower() not in ("false", "0", "no", "off"),
     )
 
 

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.pipeline.generation.checks import validate_output
-from app.pipeline.generation.schema import Edge, Workflow, WorkflowMetadata, WorkflowNode
+from app.pipeline.generation.schema import ConditionGroup, Edge, Workflow, WorkflowMetadata, WorkflowNode
 from app.pipeline.validation import display, is_ready, links, open_items, structure_errors
 from app.state.models import FieldValue, Step, WorkflowState
 
@@ -91,8 +91,21 @@ def _node(step: Step) -> WorkflowNode:
     else:
         node_type = f"{app}_{_slug(step.operation)}".strip("_")
     parameters: dict[str, Any] = {"app": step.app, "operation": step.operation}
-    parameters |= {p.name: p.value for p in step.params if p.value is not None}
+    if step.kind == "condition":
+        parameters |= _condition_group(step)
+    else:
+        parameters |= {p.name: p.value for p in step.params if p.value is not None}
     return WorkflowNode(id=step.id, type=node_type, name=step.title, parameters=parameters)
+
+
+def _condition_group(step: Step) -> dict[str, Any]:
+    """An If node's test as a ConditionGroup: {"conditions": [{field, operator, value}, …], "combinator": …}."""
+    conditions = []
+    for index in step.comparison_indexes():
+        field, operator, value = step.comparison(index)
+        conditions.append({"field": field.value if field else None, "operator": operator.value if operator else None,
+                           "value": value.value if value else None})
+    return ConditionGroup(conditions=conditions, combinator=step.combinator).model_dump()
 
 
 def _summary(step: Step) -> str:

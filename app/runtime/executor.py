@@ -25,7 +25,8 @@ from urllib.parse import urlsplit
 
 import requests
 
-from app.pipeline.generation.schema import Edge, Workflow, WorkflowNode
+from app.catalogue import CATALOGUE, find
+from app.pipeline.generation.schema import Condition, ConditionGroup, Edge, Workflow, WorkflowNode
 from app.pipeline.normalize import ORDERING_OPERATORS, UNARY_OPERATORS
 from app.security.runtime_guardrails import sanitize_runtime_text, validate_http_url, validate_resolved_host
 
@@ -75,9 +76,32 @@ class StepResult:
     error: str | None = None
 
 
+# Catalogue entries marked executable → the function below that runs them.
+RUNNERS = {"manual.trigger": "trigger", "webhook.trigger": "trigger", "if.condition": "if",
+           "http_request.request": "http", "slack.send_message": "slack"}
+
+
 def unsupported(workflow: Workflow) -> list[str]:
     """The steps this runner cannot execute, e.g. ["Gmail: Send email"]."""
     return [node.name for node in workflow.nodes if _kind(node) is None]
+
+
+def runner_for(app: str | None, operation: str, kind: str) -> str | None:
+    """Which runner executes a step ("slack", "http", …), or None: driven by the catalogue's `executable` entries.
+    A step outside the catalogue falls back to the matching used before it existed, so older workflows still run."""
+    if kind == "condition":
+        return "if"
+    entry = find(app, operation, kind)
+    if entry is not None:
+        return RUNNERS.get(entry.key) if entry.executable else None
+    name = str(app or "").lower()
+    if kind == "trigger":
+        return "trigger" if name in TRIGGER_APPS else None
+    if name == "http request":
+        return "http"
+    if name == "slack" and SLACK_OPERATION.search(operation or ""):
+        return "slack"
+    return None
 
 
 def run_workflow(workflow: Workflow, data: dict[str, Any] | None = None, send: Send = safe_request,
@@ -86,8 +110,10 @@ def run_workflow(workflow: Workflow, data: dict[str, Any] | None = None, send: S
     for a condition, the edge's branch is the condition's result. Other steps are reported as skipped."""
     missing = unsupported(workflow)
     if missing:
-        raise RunError("This runner supports Manual or Webhook triggers, If, HTTP Request and Slack messages "
-                       f"only. Not supported: {', '.join(missing)}.")
+        runnable = ", ".join(f"{e.app}: {e.operation}" for e in CATALOGUE.values() if e.executable)
+        raise RunError(f"Not supported: {', '.join(missing)}. These steps are planned, not executable here: this "
+                       f"runner executes {runnable} only, and runs a workflow only when every step is one of them. "
+                       "Nothing was run.")
     incoming: dict[str, list[Edge]] = defaultdict(list)
     for edge in workflow.edges:
         incoming[edge.target].append(edge)
@@ -111,18 +137,10 @@ def run_workflow(workflow: Workflow, data: dict[str, Any] | None = None, send: S
 
 
 def _kind(node: WorkflowNode) -> str | None:
-    app = str(node.parameters.get("app") or "").lower()
     if node.type == "end":
         return "end"
-    if node.type == "condition":
-        return "if"
-    if node.type.endswith("_trigger"):
-        return "trigger" if app in TRIGGER_APPS else None
-    if app == "http request":
-        return "http"
-    if app == "slack" and SLACK_OPERATION.search(str(node.parameters.get("operation") or "")):
-        return "slack"
-    return None
+    kind = "condition" if node.type == "condition" else "trigger" if node.type.endswith("_trigger") else "action"
+    return runner_for(node.parameters.get("app"), str(node.parameters.get("operation") or ""), kind)
 
 
 def _active(edge: Edge, outputs: dict[str, Any]) -> bool:
@@ -144,15 +162,33 @@ def _run_step(node: WorkflowNode, data: dict, outputs: dict, trigger_id: str, se
 
 # -- steps ----------------------------------------------------------------------------------------------
 def _condition(params: dict, outputs: dict, trigger_id: str) -> dict:
-    field = EXPRESSION.sub(r"\1", str(params.get("field") or "")).strip()
-    left, operator = _lookup(field, outputs, trigger_id), params.get("operator")
+    """Evaluates the If node's comparisons in order, joined with "and" (all must hold) or "or" (one is enough);
+    it stops as soon as the result is known. One comparison also gives its details at the top level, as before."""
+    group = ConditionGroup.from_parameters(params)
+    if not group.conditions:
+        raise StepError("the condition has nothing to compare")
+    stop_at = group.combinator == "or"  # "or" stops at the first true comparison, "and" at the first false one
+    details = []
+    for condition in group.conditions:
+        details.append(_comparison(condition, outputs, trigger_id))
+        if details[-1]["result"] is stop_at:
+            break
+    output = {"result": details[-1]["result"], "combinator": group.combinator, "conditions": details}
+    if len(group.conditions) == 1:
+        output |= {k: v for k, v in details[0].items() if k != "result"}
+    return output
+
+
+def _comparison(condition: Condition, outputs: dict, trigger_id: str) -> dict:
+    field = EXPRESSION.sub(r"\1", str(condition.field or "")).strip()
+    left, operator = _lookup(field, outputs, trigger_id), condition.operator
     if operator in UNARY_OPERATORS:  # a missing field is what "is empty" checks for
         empty = left is MISSING or left in (None, "", [], {})
         return {"result": empty == (operator == "is_empty"), "field": field,
                 "actual": None if left is MISSING else left, "operator": operator}
     if left is MISSING:
         raise StepError(f'the data has no "{field}"')
-    right = _render(params.get("value"), outputs, trigger_id)
+    right = _render(condition.value, outputs, trigger_id)
     return {"result": _compare(left, str(operator), right), "field": field, "actual": left, "operator": operator,
             "value": right}
 

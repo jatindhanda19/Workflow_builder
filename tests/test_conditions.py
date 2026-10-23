@@ -123,7 +123,7 @@ def _orders_plan(operator=None, operator_evidence=None, **kwargs):
     params = [_p("order_total", label="Order total field", kind="number"),
               _p("comparison_operator", operator, operator_evidence, kind="choice"),
               _p("value", "50000", "₹50,000", kind="number")]
-    return _condition_plan("order_total", params, ("notify_sales_manager", "Slack", "Send message"),
+    return _condition_plan("order_total", params, ("notify_sales_manager", "Slack", "Send alert"),
                            ("add_order_to_db", "MySQL", "Insert row"), trigger=("Square", "Square", "New order"),
                            **kwargs)
 
@@ -135,7 +135,7 @@ def test_condition_stated_in_the_request_is_never_asked():
     assert state.workflow is not None
     assert state.workflow.nodes[1].name == "order.total > 50000?"
     assert state.workflow.metadata.description == (
-        "Square: New order → order.total > 50000? → yes: Slack: Send message / no: MySQL: Insert row")
+        "Square: New order → order.total > 50000? → yes: Slack: Send alert / no: MySQL: Insert row")
 
 
 def test_misread_comparison_is_corrected_by_the_users_words():
@@ -162,7 +162,7 @@ def test_d_true_and_false_branches_in_workflow_and_diagram():
 def test_d_step_after_both_branches_joins_them():
     plan = _invoice_plan(field="invoice.amount")
     plan.steps.append(PlannedStep(id="log_row", kind="action", app="Google Sheets", app_evidence="Google Sheets",
-                                  operation="Append row", after=["notify_manager", "save_invoice"]))
+                                  operation="Log row", after=["notify_manager", "save_invoice"]))
     state = _run(WorkflowState(), INVOICE + " In both cases log it in Google Sheets.", plan)
     assert {("notify_manager", "log_row", None), ("save_invoice", "log_row", None)} <= _edges(state)
 
@@ -205,15 +205,15 @@ def test_e_otherwise_ignore_may_end():
 @pytest.mark.parametrize("request_text, trigger_app, subject, field, operator_words, value, value_evidence, expected, true_step, false_step", [
     ("When a new order arrives in Shopify, if the order total > 5000, notify sales on Slack; otherwise save the order "
      "to Airtable.", "Shopify", "total", ("order.total", "order total"), (">", ">"), "5000", "5000",
-     ("order.total", "greater_than", "5000"), ("notify_sales", "Slack", "Send message"),
+     ("order.total", "greater_than", "5000"), ("notify_sales", "Slack", "Send alert"),
      ("save_order", "Airtable", "Create record")),
     ("When a lead comes in from Typeform, if the lead score < 50, send an email with Gmail; otherwise create a CRM "
      "record in HubSpot.", "Typeform", "score", ("#score", "#score"), ("less than", "<"), "50", "50",
-     ("lead.score", "less_than", "50"), ("send_email", "Gmail", "Send email"),
+     ("lead.score", "less_than", "50"), ("send_email", "Gmail", "Create draft"),
      ("create_contact", "HubSpot", "Create contact")),
     ("When a file is added to Google Drive, if file size >= 10 MB, notify the admin on Slack; otherwise continue "
      "processing with HTTP Request.", "Google Drive", "size", ("file.size", "file size"), (">=", ">="), "10", "10 MB",
-     ("file.size", "greater_than_or_equal", "10"), ("notify_admin", "Slack", "Send message"),
+     ("file.size", "greater_than_or_equal", "10"), ("notify_admin", "Slack", "Send alert"),
      ("process_file", "HTTP Request", "POST request")),
 ])
 def test_generic_conditions(request_text, trigger_app, subject, field, operator_words, value, value_evidence, expected,
@@ -260,7 +260,8 @@ NESTED = ("When an invoice arrives in Gmail, if the invoice amount is above ₹1
 
 
 def _action(step_id, app, after=(), branch=None):
-    return PlannedStep(id=step_id, kind="action", app=app, app_evidence=app, operation="Send message",
+    # "Send alert" is not a catalogue operation: these steps stand for any action, so no settings are asked.
+    return PlannedStep(id=step_id, kind="action", app=app, app_evidence=app, operation="Send alert",
                        after=list(after), branch=branch)
 
 
@@ -294,15 +295,15 @@ def test_condition_inside_a_condition_outcome():
     }
     assert _condition(state, "check_score") == {"field": "customer.score", "operator": "greater_than", "value": "80"}
     assert state.workflow.metadata.description == (
-        "Gmail: New invoice email → invoice.amount > 100000? → yes: customer.score > 80? → yes: Slack: Send message "
-        "/ no: Telegram: Send message / no: OneDrive: Send message")
+        "Gmail: New invoice email → invoice.amount > 100000? → yes: customer.score > 80? → yes: Slack: Send alert "
+        "/ no: Telegram: Send alert / no: OneDrive: Send alert")
 
 
 def test_plan_text_names_the_step_a_branch_follows():
     state = _run(WorkflowState(), NESTED, _nested_plan(*NESTED_ACTIONS))
     plan = _plan_text(state)
-    assert "**Otherwise:** OneDrive: Send message _(after invoice.amount > 100000?)_" in plan
-    assert "**If yes:** Slack: Send message\n" in plan  # right after its condition: nothing to add
+    assert "**Otherwise:** OneDrive: Send alert _(after invoice.amount > 100000?)_" in plan
+    assert "**If yes:** Slack: Send alert\n" in plan  # right after its condition: nothing to add
 
 
 @pytest.mark.parametrize("bad, expected", [
@@ -351,7 +352,7 @@ def test_check_whether_and_two_actions_on_yes_become_a_chain():
         ("add_airtable", "send_slack", None),
         ("check_order_value", "end_1", "false"),
     }
-    assert _plan_text(state).endswith("3. **If yes:** Airtable: Send message\n4. **Then:** Slack: Send message")
+    assert _plan_text(state).endswith("3. **If yes:** Airtable: Send alert\n4. **Then:** Slack: Send alert")
 
 
 @pytest.mark.parametrize("typed, kind", [("thanks", "other"), ("thanks", "unclear"), ("hello", "build")])
@@ -381,7 +382,7 @@ def _two_conditions_plan():
     return TurnPlan(message_kind="build", steps=[
         PlannedStep(id="shopify_trigger", kind="trigger", app="Shopify", app_evidence="Shopify", operation="New order"),
         condition("check_email", "Email"),
-        PlannedStep(id="alert_ops", kind="action", operation="Send message", after=["check_email"], branch="true"),
+        PlannedStep(id="alert_ops", kind="action", operation="Send alert", after=["check_email"], branch="true"),
         condition("check_order_value", "Order value", after=["check_email"], branch="false"),
         _action("add_high_value", "Airtable", ["check_order_value"], "true"),
         _action("notify_finance", "Slack", ["add_high_value"]),

@@ -400,7 +400,18 @@ function FieldPanel({ fields = [], steps = [], workflow, mode }) {
           steps.length ? steps.map((step, index) => (
             <div className="step-row" key={step.id || index}>
               <div className="step-number">{String(index + 1).padStart(2, "0")}</div>
-              <div><b>{step.title || step.operation || `Step ${index + 1}`}</b><p>{step.app || step.kind || "Workflow operation"}</p></div>
+              <div>
+                <b>{step.title || step.operation || `Step ${index + 1}`}</b>
+                <p>{step.app || step.kind || "Workflow operation"}</p>
+                <div className="step-badges">
+                  {step.app && (step.verified
+                    ? <span className="step-badge verified" title="Checked against the app catalogue">Verified</span>
+                    : <span className="step-badge" title="Not in the app catalogue: its settings are not checked">Unverified</span>)}
+                  {step.executable
+                    ? <span className="step-badge runs" title="The built-in runner can execute this step">Runs here</span>
+                    : <span className="step-badge" title="Planned, not executable here">Planned only</span>}
+                </div>
+              </div>
             </div>
           )) : <div className="empty-inspector"><Icon name="workflow" size={23} /><b>No steps yet</b><p>Your generated workflow will appear here.</p></div>
         )}
@@ -691,6 +702,8 @@ function App() {
   const hasMessages = messages.length > 0;
   // The backend leaves a question's options out of the reply text; they are shown as buttons here.
   const question = view?.question;
+  // Steps the built-in runner cannot execute: the workflow is then planned only, never half run.
+  const notRunnable = (view?.steps || []).filter((step) => step.executable === false);
 
   return (
     <div className="app-shell">
@@ -859,6 +872,13 @@ function App() {
                   <span className="ready-dot" />
                 </div>
                 <p className="execute-description">Review the generated workflow and provide any required input before running it.</p>
+                {notRunnable.length > 0 && (
+                  <div className="run-warning" role="status">
+                    <b>Planned, not executable here:</b> {notRunnable.map((s) => s.title).join(", ")}.
+                    {" "}This runner executes Manual and Webhook triggers, If, HTTP Request and Slack messages, and
+                    runs a workflow only when every step is one of them.
+                  </div>
+                )}
                 <button className="secondary-button full-button" onClick={() => setShowRun(!showRun)}>
                   <Icon name="play" size={16} /> {showRun ? "Hide execution options" : "Configure execution"}
                 </button>
@@ -867,7 +887,8 @@ function App() {
                   <div className="run-config">
                     <label htmlFor="run-input">Input JSON</label>
                     <textarea id="run-input" value={runInput} onChange={(event) => setRunInput(event.target.value)} rows={5} spellCheck="false" />
-                    <button className="primary-button full-button" onClick={executeWorkflow} disabled={running}>
+                    <button className="primary-button full-button" onClick={executeWorkflow}
+                      disabled={running || notRunnable.length > 0}>
                       {running ? <span className="spinner" /> : <Icon name="play" size={15} />}
                       {running ? "Running..." : "Execute workflow"}
                     </button>

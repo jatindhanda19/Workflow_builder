@@ -230,6 +230,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .sidebar-card-icon { display: grid; place-items: center; width: 32px; height: 32px; color: #a995ff; border-radius: 8px; background: #9b83ff16; }
 .sidebar-card b { font-size: 10px; }
 .sidebar-card p { margin: 6px 0 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.step-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.step-badge { padding: 2px 7px; color: #8c93a8; border: 1px solid #2c3142; border-radius: 99px; font-size: 8px; font-weight: 600; letter-spacing: .3px; }
+.step-badge.verified { color: #c6bbff; border-color: #8f7be34d; }
+.step-badge.runs { color: #56d6a2; border-color: #56d6a24d; }
+.run-warning { margin: 0 0 12px; padding: 9px 11px; color: #e8c37a; border: 1px solid #e8c37a3d; border-radius: 8px; background: #e8c37a0d; font-size: 10px; line-height: 1.6; }
 .session-list { display: flex; flex-direction: column; gap: 3px; flex: 1; min-height: 0; margin: 24px 0 14px; overflow-y: auto; }
 .session-item { display: flex; flex-direction: column; gap: 4px; width: 100%; padding: 9px 10px; color: #c9cddb; border: 1px solid transparent; border-radius: 8px; background: transparent; text-align: left; transition: background .2s, border-color .2s; }
 .session-item:hover:not(:disabled) { background: #141824; }

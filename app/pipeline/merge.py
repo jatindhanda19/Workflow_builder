@@ -20,11 +20,16 @@ from app.pipeline.normalize import (
     plain,
     stated_conditions,
 )
+from app.catalogue import CatalogueEntry, Setting, app_name, find
+from app.pipeline.gaps import reference_problem, suggestions
 from app.pipeline.planner_schema import PlannedParam, PlannedStep, TurnPlan
 from app.pipeline.validation import EXPRESSION, FIELD, OPERATOR, VAGUE, VALUE, display, validate
 from app.state.models import (
     ACTION_PLACEHOLDER,
     APP,
+    COMBINATOR,
+    COMBINATORS,
+    MAX_COMPARISONS,
     OPERATION,
     PLACEHOLDER_OPERATIONS,
     TRIGGER_PLACEHOLDER,
@@ -33,9 +38,11 @@ from app.state.models import (
     Param,
     Step,
     WorkflowState,
+    comparison_name,
 )
 
 CONDITION_APP = "If"
+CONDITION_KEY = "if.condition"  # the catalogue entry of every condition step
 GOAL = "workflow."  # target of the clarifying question asked before anything can be planned
 # Built-in nodes the user's wording can imply ("every Monday" → Schedule); any other app must be named.
 BUILTIN_APPS = frozenset({"schedule", "webhook", "manual", "if", "http request", "code", "wait", "merge"})
@@ -75,6 +82,9 @@ SENTENCE_WORDS = frozenset({"the", "a", "an", "to", "and", "or", "for", "of", "w
 CONDITION_NOISE = frozenset({"check", "checks", "condition", "if", "field", "value", "to", "compare", "with", "the",
                              "is", "whether", "data", "of", "n"})
 CONDITION_LABELS = {FIELD: "Field to check", OPERATOR: "Comparison", VALUE: "Value to compare with"}
+# Names the planner may give the parameter that says how several comparisons combine.
+COMBINATOR_NAMES = frozenset({"combinator", "logic", "match", "join", "combine", "conjunction", "match_type",
+                              "logical_operator"})
 PLACEHOLDER_TRIGGER = Step(id="trigger", kind="trigger", operation=TRIGGER_PLACEHOLDER)
 PLACEHOLDER_ACTION = Step(id="action", kind="action", operation=ACTION_PLACEHOLDER)
 
@@ -99,6 +109,7 @@ def merge_turn(state: WorkflowState, plan: TurnPlan | None) -> WorkflowState:
     if new.steps or asks_about_a_step:
         # An empty plan that still asks about a step ("trigger.app") starts from trigger → action placeholders.
         new.steps = _structured(new.steps)
+    merger.check_references()
     # A generated workflow is kept across turns; check() regenerates it once the changed draft is complete.
     return new
 
@@ -116,6 +127,24 @@ class _Merger:
         self.log(key, "overwritten" if overwritten else "filled", display(None, value))
         if announce:
             self.state.changes.append(f"{label}: {display(None, value)}")
+
+    # -- references -----------------------------------------------------------------------------------
+    def check_references(self) -> None:
+        """A value that uses data no earlier step provides ({{summarize.output}} with no such step, or a field
+        the source does not have) is cleared and asked again: its note says why, and its first options are the
+        data the step can use. The missing step is never added (see app/pipeline/gaps.py)."""
+        for step in self.state.steps:
+            for param in step.params:
+                problem = reference_problem(self.state, step, param.value)
+                if problem is None:
+                    continue
+                announced = f"{param.label}: {display(None, param.value)}"
+                if announced in self.state.changes:
+                    self.state.changes.remove(announced)  # not stored after all, so not acknowledged
+                key = f"{step.id}.{param.name}"
+                param.value, param.note = None, problem
+                param.guesses = [s for s in suggestions(self.state, step) if validate(param, s).ok]
+                self.log(key, "rejected", problem)
 
     # -- steps --------------------------------------------------------------------------------------
     def steps(self, planned: list[PlannedStep]) -> list[Step]:
@@ -142,7 +171,10 @@ class _Merger:
         step = Step(id=step_id, kind=item.kind, app=app, operation=operation,
                     after=after, branch=None if trigger else item.branch)
         names: set[str] = set()
-        params = _condition_params(item.params) if item.kind == "condition" else item.params
+        if item.kind == "condition":
+            params = _condition_params(item.params)
+        else:  # a catalogue operation's parameters carry its setting names and kinds before they are validated
+            params = _catalogue_names(find(app, operation, item.kind) if app else None, item.params)
         for planned in params:
             name = _slug(planned.name)
             if not name or name in names or name == APP:
@@ -152,7 +184,54 @@ class _Merger:
         # Values the user already gave stay, even if the LLM left their parameter out this turn.
         if old and old.app == app:
             step.params += [p for p in old.params if p.name not in names and p.value is not None]
+        self._bind_catalogue(step)
         return step
+
+    def _bind_catalogue(self, step: Step) -> None:
+        """Checks a step against the app catalogue. A catalogue operation ("Slack: Send message") keeps only its
+        settings, with their kinds, and gets every required setting added so it is asked. Any other step (an app
+        or an operation outside the catalogue) is "unverified" and stays as the planner described it."""
+        if step.kind == "condition":
+            step.catalogue_key = CONDITION_KEY
+            return
+        app = app_name(step.app)
+        if app is not None:
+            step.app = app  # the catalogue's spelling: "google sheet" → "Google Sheets"
+        entry = find(app, step.operation, step.kind) if app else None
+        step.catalogue_key = entry.key if entry else None
+        if entry is None:
+            return
+        kept: dict[str, Param] = {}
+        for param in step.params:
+            setting = entry.setting(param.name)
+            if setting is None:
+                self.log(f"{step.id}.{param.name}", "ignored",
+                         f'"{param.name}" is not a setting of {entry.app}: {entry.operation}')
+                continue
+            if setting.name in kept and kept[setting.name].value is not None:
+                continue  # the same setting twice: the one with a value wins
+            kept[setting.name] = self._conform(step.id, param, setting)
+        for setting in entry.required_settings:
+            if setting.name not in kept:
+                kept[setting.name] = Param(name=setting.name, label=setting.label, description=setting.description,
+                                           kind=setting.type, choices=list(setting.choices), required=True)
+        step.params = list(kept.values())
+
+    def _conform(self, step_id: str, param: Param, setting: Setting) -> Param:
+        """The parameter as the catalogue declares it. A value kept under another kind is checked again."""
+        conformed = param.model_copy(update={
+            "name": setting.name, "label": setting.label, "description": setting.description, "kind": setting.type,
+            "required": setting.required, "choices": list(setting.choices) or param.choices})
+        if param.value is None or param.kind == setting.type:
+            return conformed
+        text = param.value if isinstance(param.value, str) else ", ".join(param.value)
+        verdict = validate(conformed, text)
+        if verdict.ok:
+            conformed.value = verdict.value
+        else:
+            conformed.value, conformed.note = None, verdict.reason
+            self.log(f"{step_id}.{setting.name}", "rejected", verdict.reason or "")
+        return conformed
 
     def _app(self, step_id: str, item: PlannedStep, old: Step | None) -> str | None:
         key = f"{step_id}.{APP}"
@@ -256,11 +335,13 @@ class _Merger:
             if app and (step.app or "").lower() != app.lower():
                 self.changed(target, "Trigger" if step.kind == "trigger" else "App", app, overwritten=bool(step.app))
                 step.app = app
+                self._bind_catalogue(step)  # its settings are known now, so they are asked before generating
             return
         if name == OPERATION:
             if step.needs_operation:
                 self.changed(target, "Operation", picked, overwritten=False)
                 step.operation = picked
+                self._bind_catalogue(step)
             return
         param = step.param(name)
         if param is None:
@@ -278,41 +359,46 @@ class _Merger:
         replace a different reading; the field is only filled, since the LLM may have a better reference for it.
         Each stated condition goes to the condition step it is about ("order value" to check_order_value), never
         by position, so a request with two conditions cannot cross them."""
-        conditions = [s for s in self.state.steps if s.kind == "condition"]
+        # Each comparison of each condition step is one unit: (step, comparison index).
+        units = [(s, i) for s in self.state.steps if s.kind == "condition" for i in s.comparison_indexes()]
         latest = stated_conditions(self.state.latest_user_message)
         earlier = stated_conditions(self.state.user_text())
-        for step in conditions:
-            stated_now = _stated_for(step, latest, conditions)
-            stated = stated_now or _stated_for(step, earlier, conditions)
+        for step, index in units:
+            stated_now = _stated_for(step, index, latest, units)
+            stated = stated_now or _stated_for(step, index, earlier, units)
             if stated and stated[2] and parse_operator(stated[1]) in ORDERING_OPERATORS:
                 stated = (stated[0], stated[1], re.sub(r"[^\d.-]", "", stated[2]))  # "₹50,000" → "50000"
-            for name, raw in zip((FIELD, OPERATOR, VALUE), stated or ()):
+            for base, raw in zip((FIELD, OPERATOR, VALUE), stated or ()):
+                name = comparison_name(base, index)
                 param = step.param(name)
                 verdict = validate(param, raw) if param is not None and raw else None
                 if verdict is None or not verdict.ok or _same(param.value, verdict.value):
                     continue
-                if name == VALUE and param.value is not None and _digits(param.value) == _digits(raw):
+                if base == VALUE and param.value is not None and _digits(param.value) == _digits(raw):
                     continue  # "50000" and "₹50,000" are the same value
-                if param.value is None or (stated_now and name != FIELD):
+                if param.value is None or (stated_now and base != FIELD):
                     self._set(f"{step.id}.{name}", param, verdict, overwritten=param.value is not None)
-            value, operator = step.param(VALUE), step.param(OPERATOR)
+            _, operator, value = step.comparison(index)
             if value is not None and operator is not None:
                 value.required = operator.value not in UNARY_OPERATORS  # "is missing" compares with nothing
 
 
-def _stated_for(step: Step, stated: list[tuple], conditions: list[Step]) -> tuple | None:
-    """The stated condition about this step's data: its field words appear in the step's id, operation, field
-    label or field. One condition and one stated condition belong together when either side names no data
-    ("if it is above 500", or a step called "Check condition")."""
+def _stated_for(step: Step, index: int, stated: list[tuple], units: list[tuple[Step, int]]) -> tuple | None:
+    """The stated condition about this comparison's data: its field words appear in its field label or field, or,
+    for a step with one comparison, in the step's id or operation. One comparison and one stated condition belong
+    together when either side names no data ("if it is above 500", or a step called "Check condition")."""
     def words(text: str) -> set[str]:
         return set(re.findall(r"[a-z0-9]+", text.lower())) - CONDITION_NOISE
 
-    field = step.param(FIELD)
-    about = words(" ".join([step.id, step.operation, field.label if field else "", str(field.value or "") if field else ""]))
+    field = step.comparison(index)[0]
+    own = [field.label, str(field.value or "")] if field else []
+    # The step's id and operation describe every comparison of a multi-comparison step, so they decide nothing.
+    names = [step.id, step.operation] if len(step.comparison_indexes()) == 1 else []
+    about = words(" ".join([*names, *own]))
     matching = [s for s in stated if s[0] and words(s[0].replace(".", " ").replace("_", " ")) & about]
     if len(matching) == 1:
         return matching[0]
-    if not matching and len(stated) == 1 == len(conditions) and (stated[0][0] is None or not about):
+    if not matching and len(stated) == 1 == len(units) and (stated[0][0] is None or not about):
         return stated[0]
     return None
 
@@ -375,29 +461,81 @@ def _condition_slot(planned: PlannedParam) -> str | None:
     return None
 
 
-def _condition_params(params: list[PlannedParam]) -> list[PlannedParam]:
-    """Exactly field, operator and value, whatever the planner called them. A parameter named after the data
-    ("amount") is the field, so its answer is validated as a field and a number there is rejected."""
-    slots: dict[str, PlannedParam] = {}
-    unknown = []
+def _catalogue_names(entry: CatalogueEntry | None, params: list[PlannedParam]) -> list[PlannedParam]:
+    """The planner's parameters under the catalogue's setting names and kinds ("text" → "message"), so they
+    are validated as the catalogue declares and line up with the values kept from earlier turns."""
+    if entry is None:
+        return params
+    named = []
     for planned in params:
-        slot = _condition_slot(planned)
-        if slot and slot not in slots:
-            slots[slot] = planned
+        setting = entry.setting(planned.name)
+        named.append(planned if setting is None else planned.model_copy(update={
+            "name": setting.name, "label": setting.label, "description": setting.description, "kind": setting.type,
+            "required": setting.required, "choices": list(setting.choices) or planned.choices}))
+    return named
+
+
+def _condition_params(params: list[PlannedParam]) -> list[PlannedParam]:
+    """Exactly field, operator and value for each comparison, whatever the planner called them: field / operator /
+    value for the first, field_2 / operator_2 / value_2 for the next (up to MAX_COMPARISONS), and, when there are
+    several, "combinator" (and / or). A parameter named after the data ("amount") is the first field, so its answer
+    is validated as a field and a number there is rejected."""
+    groups: dict[int, dict[str, PlannedParam]] = {1: {}}
+    unknown, combinator = [], None
+    for planned in params:
+        if _is_combinator(planned):
+            combinator = combinator or planned
+            continue
+        base, index = _comparison_index(_slug(planned.name))
+        slot = _condition_slot(planned.model_copy(update={"name": base}))
+        group = groups.setdefault(index, {})
+        if slot and slot not in group:
+            group[slot] = planned
         else:
             unknown.append(planned)
-    if FIELD not in slots and unknown:
-        slots[FIELD] = unknown.pop(0)
+    if FIELD not in groups[1] and unknown:
+        groups[1][FIELD] = unknown.pop(0)
+    indexes = [i for i in sorted(groups) if i == 1 or groups[i]][:MAX_COMPARISONS]
     result = []
-    for slot in (FIELD, OPERATOR, VALUE):
-        planned = slots.get(slot)
-        label = (planned.label.strip() if planned and slot == FIELD else "") or CONDITION_LABELS[slot]
-        kind = {FIELD: "field", OPERATOR: "operator"}.get(slot) or (
-            "number" if planned and planned.kind == "number" else "text")
+    for number, index in enumerate(indexes, 1):  # renumbered, so a skipped index leaves no gap
+        for slot in (FIELD, OPERATOR, VALUE):
+            planned = groups[index].get(slot)
+            default = CONDITION_LABELS[slot] if number == 1 else f"{CONDITION_LABELS[slot]} ({number})"
+            label = (planned.label.strip() if planned and slot == FIELD else "") or default
+            kind = {FIELD: "field", OPERATOR: "operator"}.get(slot) or (
+                "number" if planned and planned.kind == "number" else "text")
+            result.append(PlannedParam(
+                name=comparison_name(slot, number), label=label, description=planned.description if planned else "",
+                kind=kind, required=True, value=planned.value if planned else None,
+                evidence=planned.evidence if planned else None))
+    if len(indexes) > 1:
         result.append(PlannedParam(
-            name=slot, label=label, description=planned.description if planned else "", kind=kind, required=True,
-            value=planned.value if planned else None, evidence=planned.evidence if planned else None))
+            name=COMBINATOR, label="Combine conditions", kind="choice", choices=list(COMBINATORS), required=True,
+            description="and: every comparison must hold; or: one is enough",
+            value=_combinator_value(combinator.value) if combinator else None,
+            evidence=combinator.evidence if combinator else None))
     return result
+
+
+def _comparison_index(name: str) -> tuple[str, int]:
+    """"value_2" → ("value", 2); "order_total" → ("order_total", 1)."""
+    match = re.fullmatch(r"(.+?)_?([2-9])", name)
+    return (match.group(1), int(match.group(2))) if match else (name, 1)
+
+
+def _is_combinator(planned: PlannedParam) -> bool:
+    choices = {c.strip().lower() for c in planned.choices}
+    return _slug(planned.name) in COMBINATOR_NAMES or (planned.kind == "choice" and choices == set(COMBINATORS))
+
+
+def _combinator_value(value: str | None) -> str | None:
+    """The planner's word for how comparisons combine, as "and" / "or" ("both" → "and", "either" → "or")."""
+    words = set(re.findall(r"[a-z]+", (value or "").lower()))
+    if words & {"or", "any", "either", "one"}:
+        return "or"
+    if words & {"and", "all", "both", "every"}:
+        return "and"
+    return None
 
 
 def _structured(steps: list[Step]) -> list[Step]:

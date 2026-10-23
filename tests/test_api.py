@@ -38,7 +38,8 @@ def _plan(question=None, options=(), **values):
             _p("field", "field", v("field"), "new rows", label="Rows field"),
             _p("operator", "operator", v("operator"), "if there are new rows", label="Comparison")]),
         PlannedStep(id="send_email", kind="action", app="Gmail", app_evidence="Gmail", operation="Send email",
-                    params=[_p("to", "email", v("to")), _p("subject", value=v("subject"))]),
+                    params=[_p("to", "email", v("to")), _p("subject", value=v("subject")),
+                            _p("message", "long_text", v("message"))]),
     ]
     target, text = question or (None, None)
     next_question = NextQuestion(target=target, question=text, options=list(options)) if question else None
@@ -55,7 +56,9 @@ CONVERSATION = [
     ("Asia/Kolkata", _plan(("send_email.to", "Who should get the email?"), timezone="Asia/Kolkata")),
     ("you@example.com", _plan(("send_email.subject", "What should the subject be?"), ["New orders today"],
                               to="you@example.com")),
-    ("New orders today", _plan(subject="New orders today")),
+    ("New orders today", _plan(("send_email.message", "What should the email say?"), ["Here are today's new orders."],
+                               subject="New orders today")),
+    ("Here are today's new orders.", _plan(message="Here are today's new orders.")),
 ]
 
 

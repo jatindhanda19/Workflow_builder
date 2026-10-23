@@ -21,7 +21,10 @@ from app.core.config import Settings
 T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger(__name__)
 PROMPTS = Path(__file__).parent / "prompts"
-MAX_ATTEMPTS = 3
+# Per model: the request, then one repair request that shows the model its rejected reply and why. Repeating the
+# identical request mostly repeats the same mistake, so after the repair the next model is tried.
+MAX_ATTEMPTS = 2
+REPAIR_CHARS = 1500  # how much of the rejected reply the repair request quotes
 DEFAULT_COOLDOWN_SECONDS = 60.0
 # Keys of a JSON schema node; a dict made only of these is a schema, not a value (see _unschema).
 SCHEMA_KEYS = frozenset({"type", "default", "enum", "description", "properties", "required", "items", "title",
@@ -68,9 +71,13 @@ def load_prompt(name: str) -> str:
 class LLMClient:
     """Tries each model in order. A model over its quota is skipped until the provider's wait time is over."""
 
-    def __init__(self, models: list[tuple[str, BaseChatModel]], max_attempts: int = MAX_ATTEMPTS) -> None:
+    def __init__(self, models: list[tuple[str, BaseChatModel]], max_attempts: int = MAX_ATTEMPTS,
+                 strict: bool = False) -> None:
         self._models = models
         self._max_attempts = max_attempts
+        # Groq's strict Structured Outputs: the provider checks the reply against the full schema and returns it in
+        # the error ("failed_generation") when it does not match, so _recover can still use what passes our schema.
+        self._strict = strict
         self._cooldown_until: dict[str, float] = {}
 
     def generate(self, schema: type[T], prompt: str, user_prompt: str, call: LLMCall | None = None) -> T:
@@ -102,13 +109,15 @@ class LLMClient:
     def _generate(self, name: str, model: BaseChatModel, schema: type[T], prompt: str, messages: list,
                   call: LLMCall) -> T:
         # Groq's Structured Outputs: the reply is JSON for the schema, not a tool call, so the model cannot skip
-        # the call or misname the tool. Best-effort mode: our schema has optional fields, which strict mode forbids.
-        runnable = model.with_structured_output(schema, method="json_schema")
+        # the call or misname the tool.
+        options = {"strict": True} if self._strict else {}
+        runnable = model.with_structured_output(schema, method="json_schema", **options)
         last_error: Exception | None = None
+        request = messages
         for attempt in range(1, self._max_attempts + 1):
             started = time.perf_counter()
             try:
-                result = runnable.invoke(messages)
+                result = runnable.invoke(request)
                 if result is None:
                     raise ValueError("model returned no structured output")
                 parsed = result if isinstance(result, schema) else schema.model_validate(result)
@@ -135,6 +144,7 @@ class LLMClient:
                     return parsed
                 last_error = exc
                 logger.warning("llm %s attempt %d with %s failed: %s", prompt, attempt, name, _reason(exc))
+                request = _repair_request(messages, exc)  # the next attempt shows the model what was wrong
         logger.error("llm %s failed with %s: %s", prompt, name, last_error)
         raise LLMError(f"{schema.__name__} generation failed: {last_error}") from last_error
 
@@ -143,7 +153,18 @@ def build_llm(settings: Settings) -> LLMClient:
     names = [settings.model, *([settings.fallback_model] if settings.fallback_model else [])]
     return LLMClient([(name, ChatGroq(model=name, api_key=settings.api_key, temperature=settings.temperature,
                                       reasoning_effort=settings.reasoning_effort))
-                      for name in names])
+                      for name in names], strict=settings.strict_output)
+
+
+def _repair_request(messages: list, exc: Exception) -> list:
+    """The original request plus what went wrong: the model's rejected reply (when the error carries it) and the
+    reason, so the second attempt can fix the reply instead of repeating it."""
+    rejected = _error_body(exc).get("failed_generation") or getattr(exc, "llm_output", None)
+    note = f"Your last reply could not be used: {_reason(exc)}"
+    if isinstance(rejected, str) and rejected.strip():
+        note += f"\n\nYour reply was:\n{rejected.strip()[:REPAIR_CHARS]}"
+    note += "\n\nReply again with the corrected JSON only, matching the schema exactly."
+    return [*messages, HumanMessage(content=note)]
 
 
 class _RateLimited(Exception):

@@ -81,12 +81,13 @@ def test_2b_picked_clarification_continues_normally():
     state = _run(state, "also add small message", TurnPlan(message_kind="unclear", next_question=NextQuestion(
         target="clarify", question="Where should I add the message?",
         options=["Add it to the Airtable record", "Add it to the confirmation email"])))
-    plan = _plan(filled=True, next_question=NextQuestion(target="send_email.footer", question="What should the note say?"))
-    plan.steps[2].params.append(_p("footer", "long_text"))
-    state = _run(state, "B", plan)
-    assert state.picked == "Add it to the confirmation email"
+    plan = _plan(filled=True, next_question=NextQuestion(target="add_airtable_record.note",
+                                                         question="What should the note say?"))
+    plan.steps[1].params.append(_p("note", "long_text"))
+    state = _run(state, "A", plan)
+    assert state.picked == "Add it to the Airtable record"
     # The generated workflow stays while the new message text is asked.
-    assert state.target == "send_email.footer" and state.workflow is not None
+    assert state.target == "add_airtable_record.note" and state.workflow is not None
 
 
 def test_3_send_it_to_the_team_asks_for_destination():
@@ -139,8 +140,9 @@ def test_rate_limited_turn_shows_only_the_error():
 
 
 def _with_footer(value=None):
+    # On the Airtable step (outside the catalogue): Gmail's Send email has no footer setting.
     plan = _plan(filled=True)
-    plan.steps[2].params.append(_p("footer", "long_text", value=value, evidence=value))
+    plan.steps[1].params.append(_p("footer", "long_text", value=value, evidence=value))
     return plan
 
 
@@ -148,11 +150,11 @@ def test_workflow_is_kept_across_turns_and_the_old_version_saved():
     state = _generated()
     first = state.workflow
     # Turn 1: the edit needs one more answer; the generated workflow stays.
-    state = _run(state, "add a footer to the email", _with_footer())
-    assert state.workflow == first and state.target == "send_email.footer" and state.mode == "collecting"
+    state = _run(state, "add a footer to the Airtable record", _with_footer())
+    assert state.workflow == first and state.target == "add_airtable_record.footer" and state.mode == "collecting"
     # Turn 2: the answer completes the edit; the workflow is regenerated and the old version kept.
     state = _run(state, "Sent by the support team", _with_footer("Sent by the support team"))
-    assert state.workflow.nodes[2].parameters["footer"] == "Sent by the support team"
+    assert state.workflow.nodes[1].parameters["footer"] == "Sent by the support team"
     assert state.previous_workflows == [first] and state.previous_reasons == ["edited"]
     assert state.messages[-1].content.startswith("Updated")
 
